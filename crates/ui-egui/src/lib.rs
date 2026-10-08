@@ -252,18 +252,25 @@ impl CraftCenterApp {
         egui::Panel::top("titlebar").exact_size(38.0).frame(egui::Frame::NONE.fill(tokens.chrome).inner_margin(egui::Margin::symmetric(10, 0))).show(
             ui,
             |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("CraftCenter").font(semibold(13.0)).color(tokens.text));
-                    ui.add_space(14.0);
-                    for (view, label) in [(View::Catalogue, "Apps"), (View::Settings, "Settings"), (View::About, "About")] {
-                        let selected = self.view == view;
-                        let text = RichText::new(label).font(medium(12.0)).color(if selected { tokens.text } else { tokens.text_faint });
-                        if ui.selectable_label(selected, text).clicked() {
-                            self.view = view;
+                let bar = ui.max_rect();
+                // What the tabs end at and what the caption buttons begin at: between them is the
+                // bare strip that drags the window, claimed as a widget so no pixel is contested.
+                let (content_right, caption_left) = ui
+                    .horizontal_centered(|ui| {
+                        ui.label(RichText::new("CraftCenter").font(semibold(13.0)).color(tokens.text));
+                        ui.add_space(14.0);
+                        for (view, label) in [(View::Catalogue, "Apps"), (View::Settings, "Settings"), (View::About, "About")] {
+                            let selected = self.view == view;
+                            let text = RichText::new(label).font(medium(12.0)).color(if selected { tokens.text } else { tokens.text_faint });
+                            if ui.selectable_label(selected, text).clicked() {
+                                self.view = view;
+                            }
                         }
-                    }
-                    titlebar::caption_buttons(ui, ctx);
-                });
+                        let content_right = ui.cursor().left();
+                        (content_right, titlebar::caption_buttons(ui, ctx).left())
+                    })
+                    .inner;
+                titlebar::window_drag_strip(ui, ctx, bar, content_right, caption_left);
             },
         );
     }
@@ -560,8 +567,6 @@ impl CraftCenterApp {
             View::Settings => self.settings(ui, ctx),
             View::About => self.about(ui, ctx),
         });
-
-        titlebar::handle_window_gestures(ctx);
     }
 }
 

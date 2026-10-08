@@ -145,9 +145,16 @@ app and an unknown command.
 
 **Compiled and unit-tested on all three platforms in CI, but never run by a person:**
 
-- the window itself, on any platform — including the app-drawn title bar, its drag and
-  double-click-to-maximize behaviour, and the caption buttons. If it misbehaves, set
-  `CRAFTCENTER_OS_DECORATIONS=1` to get the system's own decorations back;
+- the window itself, on any platform. If it misbehaves, set `CRAFTCENTER_OS_DECORATIONS=1` to get
+  the system's own decorations back. On **Windows and Linux**, where the app draws its own title
+  bar, three things are worth confirming by hand after a change to it:
+  1. **Drag.** Press and hold the primary button on the bare strip of the bar — between the
+     `About` tab and the minimize button — and move the pointer. The window should follow.
+  2. **Double-click.** Double-click that same strip. The window should maximize, and restore on a
+     second double-click.
+  3. **The caption buttons still click.** Minimize, maximize/restore and close, and the three
+     tabs, must all still respond; the drag region is laid out to stop short of them, and that
+     arithmetic is the part the test suite can check;
 - the macOS install path (mount the DMG, copy the bundle into `~/Applications`, detach);
 - the Windows install path (unpack the portable zip, write a Start Menu shortcut);
 - replacing CraftCenter with a newer build of itself, on any platform. The file swap itself is
