@@ -8,7 +8,7 @@
 pub mod icons;
 mod settings;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use craftcenter_catalogue::{App, Catalogue};
 use craftcenter_install::{Installed, Paths, State};
@@ -112,6 +112,8 @@ pub struct SelfUpdate {
 pub struct Center<F: Fetch = Ureq> {
     catalogue: Catalogue,
     paths: Paths,
+    /// Where apps would go if the user had not chosen anywhere: what "Reset" restores.
+    default_apps: PathBuf,
     settings: Settings,
     client: Client<F>,
     cache: Cache,
@@ -132,11 +134,30 @@ impl<F: Fetch> Center<F> {
     pub fn with(catalogue: Catalogue, paths: Paths, fetch: F) -> Self {
         let settings = Settings::load(&Self::settings_path(&paths));
         let cache = Cache::new(paths.releases_cache());
-        Self { catalogue, paths, settings, client: Client::new(fetch), cache, platform: Platform::host() }
+        let default_apps = paths.apps.clone();
+        // A chosen location is adopted without being checked here: a folder that has gone
+        // missing since it was chosen must not stop CraftCenter from opening, and the install
+        // that needs it will say so plainly when the time comes.
+        let paths = match &settings.install_dir {
+            Some(dir) => paths.with_apps(PathBuf::from(dir)),
+            None => paths,
+        };
+        Self { catalogue, paths, default_apps, settings, client: Client::new(fetch), cache, platform: Platform::host() }
     }
 
     fn settings_path(paths: &Paths) -> PathBuf {
         paths.state.with_file_name("settings.toml")
+    }
+
+    /// Install into `dir` for this run only, without recording it.
+    ///
+    /// What the command line's `--install-dir` is: one invocation into a folder of your
+    /// choosing, with nothing changed about where the next one will go. The folder is checked
+    /// the same way a saved choice is, so an unusable one is refused before anything downloads.
+    pub fn with_install_dir(mut self, dir: &Path) -> Result<Self, Error> {
+        craftcenter_install::check_install_dir(dir)?;
+        self.paths = self.paths.with_apps(dir.to_path_buf());
+        Ok(self)
     }
 
     /// Install for a platform other than the host's. Used by `xtask` and the tests to check every
@@ -158,10 +179,68 @@ impl<F: Fetch> Center<F> {
         &self.settings
     }
 
+    /// Save the settings and adopt them. A chosen install location is checked first — and
+    /// refused with a plain sentence if this user cannot write to it — so the failure happens
+    /// here rather than part-way through the next install.
     pub fn set_settings(&mut self, settings: Settings) -> Result<(), Error> {
+        let apps = match &settings.install_dir {
+            Some(dir) => {
+                let dir = PathBuf::from(dir);
+                craftcenter_install::check_install_dir(&dir)?;
+                dir
+            }
+            None => self.default_apps.clone(),
+        };
         settings.save(&Self::settings_path(&self.paths))?;
+        self.paths = self.paths.clone().with_apps(apps);
         self.settings = settings;
         Ok(())
+    }
+
+    /// Where apps are installed now.
+    pub fn install_dir(&self) -> &Path {
+        &self.paths.apps
+    }
+
+    /// Where apps would be installed if nobody had chosen: the per-user default for this
+    /// platform, or whatever `CRAFTCENTER_ROOT` names.
+    pub fn default_install_dir(&self) -> &Path {
+        &self.default_apps
+    }
+
+    /// Choose where apps are installed from now on, or pass `None` to go back to the default.
+    ///
+    /// Nothing already installed moves — see [`Self::move_app`], which is the explicit action
+    /// for that. Everything installed from here on goes to the new place.
+    pub fn set_install_dir(&mut self, dir: Option<&Path>) -> Result<(), Error> {
+        let install_dir = dir.map(|dir| dir.display().to_string());
+        self.set_settings(Settings { install_dir, ..self.settings.clone() })
+    }
+
+    /// The installed apps that are not in the current install location, in catalogue order.
+    pub fn misplaced(&self) -> Vec<String> {
+        let Ok(state) = State::load(&self.paths.state) else {
+            return Vec::new();
+        };
+        self.catalogue
+            .installable()
+            .filter(|app| {
+                state
+                    .get(&app.slug)
+                    .is_some_and(|installed| craftcenter_install::app_home(&self.paths, app, installed).parent() != Some(self.paths.apps.as_path()))
+            })
+            .map(|app| app.slug.clone())
+            .collect()
+    }
+
+    /// Move one installed app into the current install location.
+    ///
+    /// Copy, verify, swap, delete, in that order and one app at a time. An app that appears to
+    /// be running is refused rather than moved out from under itself.
+    pub fn move_app(&self, slug: &str, progress: Progress<'_>) -> Result<Installed, Error> {
+        let app = self.app(slug)?;
+        let apps = self.paths.apps.clone();
+        craftcenter_install::move_app(&self.paths, app, &apps, progress).map_err(Error::from)
     }
 
     pub fn platform(&self) -> Result<Platform, Error> {
@@ -469,6 +548,65 @@ mod tests {
         Center::with(catalogue, Paths::rooted(root), fetch).with_platform(Platform::new(Os::Linux, Arch::X86_64))
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_chosen_install_location_takes_new_installs_and_leaves_old_ones_alone() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let elsewhere = tempfile::tempdir().expect("temp dir");
+        let mut center = center(root.path());
+        let mut nothing = |_: u64, _: Option<u64>| {};
+
+        // Installed where the platform would put it.
+        let first = center.install("photocraft", &mut nothing).expect("installed");
+        assert!(PathBuf::from(&first.dir).starts_with(center.default_install_dir()));
+        assert!(center.misplaced().is_empty(), "nothing is out of place yet");
+
+        center.set_install_dir(Some(elsewhere.path())).expect("the new location is usable");
+        assert_eq!(center.install_dir(), elsewhere.path());
+        assert_eq!(center.settings().install_dir.as_deref(), Some(elsewhere.path().display().to_string().as_str()));
+
+        // The app that is already installed has not moved, and says so.
+        assert_eq!(center.misplaced(), vec!["photocraft".to_owned()]);
+        assert!(PathBuf::from(&first.dir).is_dir(), "the installed app is untouched");
+
+        // Moving it is the separate, explicit action.
+        let moved = center.move_app("photocraft", &mut nothing).expect("moved");
+        assert!(PathBuf::from(&moved.dir).starts_with(elsewhere.path()), "{}", moved.dir);
+        assert!(!PathBuf::from(&first.dir).exists(), "the old copy is gone");
+        assert!(center.misplaced().is_empty(), "and nothing is out of place any more");
+
+        // Resetting puts the default back without moving anything a second time.
+        center.set_install_dir(None).expect("reset");
+        assert_eq!(center.install_dir(), center.default_install_dir());
+        assert_eq!(center.settings().install_dir, None);
+        assert_eq!(center.misplaced(), vec!["photocraft".to_owned()]);
+    }
+
+    #[test]
+    fn an_install_location_that_is_a_file_is_refused_with_a_sentence() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let mut center = center(root.path());
+        let file = root.path().join("not-a-folder.txt");
+        std::fs::write(&file, b"x").expect("write");
+
+        let error = center.set_install_dir(Some(&file)).expect_err("a file is not a location");
+        assert!(error.to_string().contains("file, not a folder"), "{error}");
+        // And the setting is unchanged, so nothing is left half-applied.
+        assert_eq!(center.settings().install_dir, None);
+        assert_eq!(center.install_dir(), center.default_install_dir());
+    }
+
+    #[test]
+    fn a_chosen_location_survives_a_restart() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let elsewhere = tempfile::tempdir().expect("temp dir");
+        center(root.path()).set_install_dir(Some(elsewhere.path())).expect("chosen");
+
+        let reopened = center(root.path());
+        assert_eq!(reopened.install_dir(), elsewhere.path());
+        assert_eq!(reopened.default_install_dir(), Paths::rooted(root.path()).apps);
+    }
+
     #[test]
     fn rows_draw_before_anything_has_been_checked() {
         let root = tempfile::tempdir().expect("temp dir");
@@ -597,7 +735,7 @@ mod tests {
     fn settings_persist_and_never_hold_a_token() {
         let root = tempfile::tempdir().expect("temp dir");
         let mut center = center(root.path());
-        center.set_settings(Settings { check_interval_hours: 1, keep_previous: false, theme: "pro".to_owned() }).expect("saved");
+        center.set_settings(Settings { check_interval_hours: 1, keep_previous: false, theme: "pro".to_owned(), install_dir: None }).expect("saved");
         assert_eq!(center.settings().check_interval_hours, 1);
         let reopened = Center::with(Catalogue::embedded().expect("parses"), Paths::rooted(root.path()), Recorded::default());
         assert_eq!(reopened.settings().check_interval_hours, 1);

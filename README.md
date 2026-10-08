@@ -49,8 +49,9 @@ of them checks whether a newer version exists. CraftCenter is the piece that was
 - **Checksum verification, always.** Every download is hashed and compared with the release's own
   `SHA256SUMS.txt` before anything is installed. An asset the manifest does not list is refused; a
   download that does not match is deleted.
-- **Per-user installs.** Nothing is written outside your own directories and you are never asked
-  for an administrator password.
+- **Per-user installs, wherever you want them.** Nothing is written outside your own directories
+  and you are never asked for an administrator password. Settings names the folder apps go in;
+  see [Choosing where apps go](#choosing-where-apps-go).
 - **No telemetry, no account, no token.** The only hosts it contacts are `github.com` and
   `api.github.com`.
 - **A command line** with the same core, for machines without a display.
@@ -96,6 +97,29 @@ trying it out, and what the tests use.
 
 On Linux, make sure `~/.local/bin` is on your `PATH`; the desktop entry CraftCenter writes uses an
 absolute path and does not depend on it.
+
+### Choosing where apps go
+
+The **Apps** column above is only the default. **Settings › Install location** changes it: pick a
+folder, and everything installed from then on goes there. On the command line the same setting is
+`craftcenter-cli config install-dir <path>`, and `craftcenter-cli config install-dir --default`
+puts it back.
+
+Two rules make this safe to change at any time:
+
+- **The folder has to be one you can write to as yourself.** CraftCenter never asks for an
+  administrator password, so a folder that would need one is refused outright rather than
+  prompting — with a sentence saying so. A path that is a file, or that is inside CraftCenter's
+  own folder, is refused too.
+- **Nothing already installed moves on its own.** Each app records the folder it was installed
+  into, and that is where it is updated, launched from and removed from, whatever the setting
+  says later. So changing the location can never strand an app you are using.
+
+When you *do* want to bring them across, **Move installed apps** (or `craftcenter-cli move`, with
+an app name to move just one) does it one app at a time: it copies the app, reads every copied
+file back and checks its digest against the original, re-points the launcher, the desktop entry
+or the Start Menu shortcut, and only then deletes the old copy. An app that appears to be running
+is refused rather than moved out from under itself — close it and move it again.
 
 ## The command line
 
@@ -161,6 +185,12 @@ app and an unknown command.
      arithmetic is the part the test suite can check;
 - the macOS install path (mount the DMG, copy the bundle into `~/Applications`, detach);
 - the Windows install path (unpack the portable zip, write a Start Menu shortcut);
+- the native folder dialog behind **Settings › Install location**, on any platform;
+- moving an installed app to a new location on **macOS or Windows**, and the "is it running?"
+  check each of those two does its own way. The move itself — copy, read back and compare every
+  digest, re-point the launcher and the desktop entry, then delete the old copy — is covered by
+  a test on Linux, and the order it happens in means an interrupted move leaves the app working
+  where it already was;
 - replacing CraftCenter with a newer build of itself, on any platform. The file swap itself is
   covered by tests; doing it to a genuinely running program is not.
 

@@ -15,6 +15,7 @@ pub mod titlebar;
 pub mod widgets;
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -24,6 +25,12 @@ use egui::{RichText, TextureHandle};
 
 use theme::{ThemeKind, Tokens, medium, mono, semibold};
 use widgets::Tone;
+
+/// Ask the user to choose a folder, starting at the one given.
+///
+/// Supplied by the binary. This crate never talks to the window system — that is what lets it be
+/// tested without a display — so the platform's own folder dialog sits on the other side of this.
+pub type FolderPicker = Box<dyn Fn(&Path) -> Option<PathBuf>>;
 
 /// Which screen is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,6 +48,7 @@ enum Event {
     Installed { slug: String, version: String },
     Removed { slug: String },
     Verified { slug: String },
+    Moved { slug: String },
     Failed { slug: String, message: String },
     SelfUpdated { to: String },
 }
@@ -66,6 +74,10 @@ pub struct CraftCenterApp {
     /// The selected card, by slug. Kept as a slug rather than an index so it survives an app
     /// moving between the two grids when it is installed or removed.
     focus: Option<String>,
+    /// Installed apps that are not in the current install location, so the settings screen can
+    /// offer to move them without reading the state file on every frame.
+    misplaced: Vec<String>,
+    picker: Option<FolderPicker>,
     message: Option<(String, Tone)>,
     draft: Settings,
     events: Receiver<Event>,
@@ -86,6 +98,7 @@ impl CraftCenterApp {
         let draft = center.settings().clone();
         let rows = center.rows();
         let platforms = rows.iter().map(|row| (row.app.slug.clone(), published_for(row))).collect();
+        let misplaced = center.misplaced();
         Self {
             center,
             rows,
@@ -95,6 +108,8 @@ impl CraftCenterApp {
             icons: HashMap::new(),
             platforms,
             focus: None,
+            misplaced,
+            picker: None,
             message: None,
             draft,
             events,
@@ -104,9 +119,17 @@ impl CraftCenterApp {
         }
     }
 
+    /// Hand the shell the platform's folder dialog. Without one, the install location can still
+    /// be read and reset; it just cannot be chosen from this window.
+    pub fn with_folder_picker(mut self, picker: FolderPicker) -> Self {
+        self.picker = Some(picker);
+        self
+    }
+
     fn refresh_rows(&mut self) {
         self.rows = self.center.rows();
         self.platforms = self.rows.iter().map(|row| (row.app.slug.clone(), published_for(row))).collect();
+        self.misplaced = self.center.misplaced();
     }
 
     fn any_busy(&self) -> bool {
@@ -240,6 +263,11 @@ impl CraftCenterApp {
                 Event::Verified { slug } => {
                     self.activity.remove(&slug);
                     self.message = Some((format!("{slug} matches the digest recorded at install time"), Tone::Good));
+                }
+                Event::Moved { slug } => {
+                    self.activity.remove(&slug);
+                    self.message = Some((format!("Moved {slug}"), Tone::Good));
+                    changed = true;
                 }
                 Event::Failed { slug, message } => {
                     self.activity.remove(&slug);
@@ -379,10 +407,14 @@ impl CraftCenterApp {
     }
 
     /// Arrow keys move the selection through the grid; Enter does what the card's own button
-    /// does. Only while nothing else has keyboard focus, so the settings screen's fields keep
-    /// their own arrow keys.
+    /// does.
+    ///
+    /// Not "while nothing has keyboard focus": clicking a card, or any button on one, gives that
+    /// widget egui's focus, and the grid would then stop answering the arrow keys for the rest
+    /// of the session. The two things that genuinely own the keyboard are a field being typed
+    /// into and an open menu, and those are what stand aside for.
     fn handle_grid_keys(&mut self, ctx: &egui::Context, slots: &[Option<String>], columns: usize) {
-        if ctx.memory(|memory| memory.focused()).is_some() {
+        if ctx.text_edit_focused() || ctx.any_popup_open() {
             return;
         }
         let (left, right, up, down, enter) = ctx.input(|i| {
@@ -517,6 +549,11 @@ impl CraftCenterApp {
     /// cannot come to different conclusions about what a card is for.
     fn primary_action(&mut self, ctx: &egui::Context, row: &Row) {
         let slug = row.app.slug.clone();
+        // Enter reaches both this and egui's own "activate the focused button", and a card can
+        // be double-clicked; either way one download is enough.
+        if self.activity.get(&slug).is_some_and(|activity| activity.busy) {
+            return;
+        }
         match row_action(row) {
             Some("Install" | "Update") => self.install(ctx, &slug),
             Some("Launch") => self.launch(&slug),
@@ -556,7 +593,7 @@ impl CraftCenterApp {
                 ui.end_row();
 
                 ui.label(RichText::new("Install location").color(tokens.text_dim));
-                ui.label(RichText::new(self.center.paths().apps.display().to_string()).monospace().color(tokens.text_faint));
+                self.install_location(ui, ctx);
                 ui.end_row();
             });
         });
@@ -581,6 +618,90 @@ impl CraftCenterApp {
              github.com's release redirect, which costs none of the API's rate limit, so no \
              credential is needed.",
         );
+    }
+
+    /// Where apps go, and the two things that can be done about it.
+    ///
+    /// Unlike the rest of this screen, choosing a location takes effect at once rather than on
+    /// Apply: it is the answer to a dialog the user has just dismissed, and leaving it pending
+    /// behind a second button would read as though nothing had happened.
+    fn install_location(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let tokens = Tokens::get(ctx);
+        let current = self.center.install_dir().to_path_buf();
+        let default = self.center.default_install_dir().to_path_buf();
+
+        ui.vertical(|ui| {
+            ui.add(egui::Label::new(RichText::new(current.display().to_string()).monospace().color(tokens.text_faint)).truncate());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let can_pick = self.picker.is_some();
+                if ui.add_enabled_ui(can_pick, |ui| widgets::secondary_button(ui, "Change\u{2026}")).inner.clicked()
+                    && let Some(chosen) = self.picker.as_ref().and_then(|pick| pick(&current))
+                {
+                    self.choose_install_dir(Some(chosen));
+                }
+                if ui.add_enabled_ui(current != default, |ui| widgets::secondary_button(ui, "Reset to default")).inner.clicked() {
+                    self.choose_install_dir(None);
+                }
+            });
+
+            if self.misplaced.is_empty() {
+                return;
+            }
+            ui.add_space(6.0);
+            let count = self.misplaced.len();
+            let what = if count == 1 { "1 installed app is".to_owned() } else { format!("{count} installed apps are") };
+            widgets::dim(ui, &format!("{what} still in the folder they were installed into, and still work there. New installs go to the folder above."));
+            ui.add_space(4.0);
+            if widgets::secondary_button(ui, "Move installed apps").clicked() && !self.any_busy() {
+                self.move_misplaced(ctx);
+            }
+        });
+    }
+
+    fn choose_install_dir(&mut self, dir: Option<PathBuf>) {
+        // The same exclusive borrow the rest of the settings need: a worker thread holding a
+        // clone of the core means the change waits rather than racing an install in flight.
+        match Arc::get_mut(&mut self.center) {
+            Some(center) => match center.set_install_dir(dir.as_deref()) {
+                Ok(()) => self.message = Some((format!("New apps will be installed in {}", center.install_dir().display()), Tone::Good)),
+                Err(error) => self.message = Some((error.to_string(), Tone::Danger)),
+            },
+            None => self.message = Some(("The install location can be changed once the current download finishes".to_owned(), Tone::Warning)),
+        }
+        self.draft.install_dir = self.center.settings().install_dir.clone();
+        self.misplaced = self.center.misplaced();
+    }
+
+    /// Move everything that is not in the current install location, one app at a time.
+    ///
+    /// One worker for the whole run, not one per app: each move copies a whole application and
+    /// reads it back to check it, and several at once would only make each of them slower.
+    fn move_misplaced(&mut self, ctx: &egui::Context) {
+        let slugs = self.center.misplaced();
+        if slugs.is_empty() {
+            return;
+        }
+        for slug in &slugs {
+            self.start(slug);
+        }
+        let center = Arc::clone(&self.center);
+        let sender = self.sender.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            for slug in slugs {
+                let mut reporter = |done: u64, total: Option<u64>| {
+                    let _ = sender.send(Event::Progress { slug: slug.clone(), done, total });
+                    ctx.request_repaint();
+                };
+                let event = match center.move_app(&slug, &mut reporter) {
+                    Ok(_) => Event::Moved { slug: slug.clone() },
+                    Err(error) => Event::Failed { slug: slug.clone(), message: error.to_string() },
+                };
+                let _ = sender.send(event);
+                ctx.request_repaint();
+            }
+        });
     }
 
     fn apply_settings(&mut self) {

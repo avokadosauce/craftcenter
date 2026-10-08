@@ -22,6 +22,15 @@ pub struct Installed {
     pub format: Format,
     /// The directory holding this version.
     pub dir: String,
+    /// The directory holding *every* version of this app — the app's own home under whichever
+    /// install location was current when it was first installed.
+    ///
+    /// Recorded per app so that changing the install location leaves what is already installed
+    /// exactly where it is: an update goes back into this directory, and a remove deletes this
+    /// one, whatever the setting says today. Absent in records written before the location could
+    /// be chosen, where today's layout is a safe guess.
+    #[serde(default)]
+    pub root: Option<String>,
     /// What to run.
     pub launcher: String,
     /// Seconds since the Unix epoch.
@@ -72,10 +81,41 @@ mod tests {
             sha256: "29e3011f49a52ea25c8fe404258a6c5fadb02094dbb40a884d69e6ba808e6136".to_owned(),
             format: Format::AppImage,
             dir: "/home/example/.local/share/craftcenter/apps/photocraft/0.3.0".to_owned(),
+            root: Some("/home/example/.local/share/craftcenter/apps/photocraft".to_owned()),
             launcher: "/home/example/.local/bin/photocraft".to_owned(),
             installed_at: 1_700_000_000,
             previous: None,
         }
+    }
+
+    /// A record written before the install location could be chosen still reads, and simply has
+    /// no home of its own recorded. Forgetting what is installed would orphan it.
+    #[test]
+    fn a_record_from_before_the_install_location_was_a_setting_still_loads() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.toml");
+        let mut state = State::default();
+        state.installed.insert("photocraft".to_owned(), Installed { root: None, ..entry() });
+        state.save(&path).expect("saved");
+
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert!(!text.contains("root"), "an absent home is not written out");
+        let read = State::load(&path).expect("loaded");
+        assert_eq!(read.get("photocraft").and_then(|installed| installed.root.clone()), None);
+        assert_eq!(read.get("photocraft").map(|installed| installed.version.clone()).as_deref(), Some("0.3.0"));
+    }
+
+    /// The home is what a change of install location must not disturb, so it is written out.
+    #[test]
+    fn the_home_is_part_of_the_record() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.toml");
+        let mut state = State::default();
+        state.installed.insert("photocraft".to_owned(), entry());
+        state.save(&path).expect("saved");
+        let read = State::load(&path).expect("loaded");
+        assert_eq!(read.get("photocraft"), Some(&entry()));
+        assert!(read.get("photocraft").and_then(|installed| installed.root.clone()).is_some());
     }
 
     #[test]

@@ -19,11 +19,18 @@ pub struct Settings {
     pub keep_previous: bool,
     /// The theme the desktop app opens in; one of the ids in `craftcenter-ui-egui`.
     pub theme: String,
+    /// Where apps are installed, when the user has chosen somewhere other than the per-user
+    /// default for their platform. `None` means the default, which is what "Reset" restores.
+    ///
+    /// Only new installs go here: an app already installed keeps the home recorded for it, and
+    /// moving it is a separate, explicit action.
+    #[serde(default)]
+    pub install_dir: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { check_interval_hours: 24, keep_previous: true, theme: "proMedium".to_owned() }
+        Self { check_interval_hours: 24, keep_previous: true, theme: "proMedium".to_owned(), install_dir: None }
     }
 }
 
@@ -60,9 +67,27 @@ mod tests {
     fn round_trips() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("settings.toml");
-        let settings = Settings { check_interval_hours: 6, keep_previous: false, theme: "studio".to_owned() };
+        let settings = Settings { check_interval_hours: 6, keep_previous: false, theme: "studio".to_owned(), install_dir: None };
         settings.save(&path).expect("saved");
         assert_eq!(Settings::load(&path), settings);
+    }
+
+    #[test]
+    fn a_chosen_install_location_round_trips_and_the_default_writes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("settings.toml");
+
+        Settings::default().save(&path).expect("saved");
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert!(!text.contains("install_dir"), "the default location is not written out: {text}");
+
+        let chosen = Settings { install_dir: Some("/srv/crafting apps".to_owned()), ..Settings::default() };
+        chosen.save(&path).expect("saved");
+        assert_eq!(Settings::load(&path), chosen);
+
+        // And resetting puts it back to the default.
+        Settings { install_dir: None, ..chosen }.save(&path).expect("saved");
+        assert_eq!(Settings::load(&path).install_dir, None);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! The same core as the desktop app, so the two cannot disagree about what "installed" or
 //! "up to date" means — and the only front end that can be driven on a machine with no display.
 //!
-//! Arguments are parsed by hand. The surface is nine verbs and three flags, which is less code
+//! Arguments are parsed by hand. The surface is eleven verbs and five flags, which is less code
 //! than a parser dependency and one fewer thing that can change under the program.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable, clippy::indexing_slicing)]
@@ -27,6 +27,10 @@ COMMANDS
     launch <app>         start an installed app
     remove <app>         uninstall an app
     verify <app>         re-hash what is installed and compare it with what was recorded
+    config               show the current settings
+    config install-dir <path>     choose where new installs go
+    config install-dir --default  go back to the per-user default
+    move [app]           move an app, or every misplaced app, into the current install dir
     self-update          replace CraftCenter with a newer build of itself
     paths                where CraftCenter keeps things
     help                 this text
@@ -35,6 +39,8 @@ OPTIONS
     --force              ignore the cached release check and look again
     --json               machine-readable output (list only)
     --platform <id>      resolve assets for another platform, e.g. windows-arm64
+    --install-dir <path> install into this folder for this run only, without saving the choice
+    --default            reset a chosen setting to its default (config install-dir only)
 
 NOTES
     Installs are per-user and never ask for administrator rights.
@@ -56,34 +62,46 @@ fn main() -> ExitCode {
 struct Args {
     command: String,
     app: Option<String>,
+    /// The third positional argument, e.g. the path in `config install-dir <path>`.
+    value: Option<String>,
     force: bool,
     json: bool,
+    /// Reset a setting to its default; currently only `config install-dir --default` reads this.
+    default: bool,
     platform: Option<String>,
+    /// Where to install for this run only. `config install-dir` is how a choice is kept.
+    install_dir: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut command = None;
     let mut app = None;
+    let mut value = None;
     let mut force = false;
     let mut json = false;
+    let mut default = false;
     let mut platform = None;
+    let mut install_dir = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--force" => force = true,
             "--json" => json = true,
+            "--default" => default = true,
             "--platform" => platform = Some(args.next().ok_or("--platform needs a value, for example windows-arm64")?),
+            "--install-dir" => install_dir = Some(args.next().ok_or("--install-dir needs a path")?),
             "-h" | "--help" => command = Some("help".to_owned()),
             "-V" | "--version" => command = Some("version".to_owned()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             other if command.is_none() => command = Some(other.to_owned()),
             other if app.is_none() => app = Some(other.to_owned()),
+            other if value.is_none() => value = Some(other.to_owned()),
             other => return Err(format!("unexpected argument {other}")),
         }
     }
 
-    Ok(Args { command: command.unwrap_or_else(|| "help".to_owned()), app, force, json, platform })
+    Ok(Args { command: command.unwrap_or_else(|| "help".to_owned()), app, value, force, json, default, platform, install_dir })
 }
 
 fn run() -> Result<ExitCode, String> {
@@ -105,6 +123,9 @@ fn run() -> Result<ExitCode, String> {
     if let Some(label) = &args.platform {
         let platform = craftcenter_select::Platform::parse(label).ok_or_else(|| format!("{label:?} is not a platform CraftCenter installs for"))?;
         center = center.with_platform(platform);
+    }
+    if let Some(dir) = &args.install_dir {
+        center = center.with_install_dir(std::path::Path::new(dir)).map_err(|e| e.to_string())?;
     }
 
     match args.command.as_str() {
@@ -144,6 +165,8 @@ fn run() -> Result<ExitCode, String> {
                 }
             }
         }
+        "config" => cmd_config(&mut center, args.app.as_deref(), args.value.as_deref(), args.default),
+        "move" => cmd_move(&center, args.app.as_deref()),
         "self-update" => cmd_self_update(&center),
         "paths" => {
             let paths = center.paths();
@@ -214,6 +237,73 @@ fn cmd_update(center: &Center, slug: Option<&str>) -> Result<ExitCode, String> {
             Err(error) => {
                 failed = true;
                 println!("{slug:<13} {error}");
+            }
+        }
+    }
+    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
+
+fn cmd_config(center: &mut Center, setting: Option<&str>, value: Option<&str>, use_default: bool) -> Result<ExitCode, String> {
+    match setting {
+        None => {
+            print_config(center);
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("install-dir") => cmd_config_install_dir(center, value, use_default),
+        Some(other) => Err(format!("unknown config setting {other:?}")),
+    }
+}
+
+fn cmd_config_install_dir(center: &mut Center, value: Option<&str>, use_default: bool) -> Result<ExitCode, String> {
+    if use_default {
+        center.set_install_dir(None).map_err(|e| e.to_string())?;
+        println!("install dir reset to {}", center.install_dir().display());
+        return Ok(ExitCode::SUCCESS);
+    }
+    let path = value.ok_or_else(|| "config install-dir needs a path, or --default to reset it".to_owned())?;
+    center.set_install_dir(Some(std::path::Path::new(path))).map_err(|e| e.to_string())?;
+    println!("install dir set to {}", center.install_dir().display());
+    let misplaced = center.misplaced();
+    if !misplaced.is_empty() {
+        let (count, noun, pronoun) = if misplaced.len() == 1 { (1, "app is", "it") } else { (misplaced.len(), "apps are", "them") };
+        println!("{count} {noun} still in the old place; `craftcenter-cli move` will move {pronoun}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_config(center: &Center) {
+    let settings = center.settings();
+    println!("{:<20} {}h", "check interval", settings.check_interval_hours);
+    println!("{:<20} {}", "keep previous", settings.keep_previous);
+    println!("{:<20} {}", "theme", settings.theme);
+    let install_dir = center.install_dir();
+    println!("{:<20} {}", "install dir", install_dir.display());
+    let default_dir = center.default_install_dir();
+    if install_dir != default_dir {
+        println!("{:<20} {}", "default install dir", default_dir.display());
+    }
+}
+
+fn cmd_move(center: &Center, slug: Option<&str>) -> Result<ExitCode, String> {
+    let slugs = match slug {
+        Some(slug) => vec![slug.to_owned()],
+        None => center.misplaced(),
+    };
+    if slugs.is_empty() {
+        println!("nothing to move; every installed app is already in the current install dir");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let mut failed = false;
+    for slug in slugs {
+        let mut progress = Reporter::new(&slug);
+        let result = center.move_app(&slug, &mut |done, total| progress.update(done, total));
+        progress.finish();
+        match result {
+            Ok(installed) => println!("moved {slug} to {}", installed.dir),
+            Err(error) => {
+                failed = true;
+                println!("{slug}: {error}");
             }
         }
     }
@@ -378,7 +468,7 @@ mod tests {
 
     #[test]
     fn the_usage_text_names_every_command_the_parser_accepts() {
-        for command in ["list", "check", "install", "update", "launch", "remove", "verify", "self-update", "paths", "help"] {
+        for command in ["list", "check", "install", "update", "launch", "remove", "verify", "config", "move", "self-update", "paths", "help"] {
             assert!(USAGE.contains(command), "{command} is not documented");
         }
     }
