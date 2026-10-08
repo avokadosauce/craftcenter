@@ -79,6 +79,34 @@ pub fn card_progress(ui: &Ui, card: Rect, done: u64, total: Option<u64>) {
     }
 }
 
+/// One line of result along the foot of a card, painted into its padding rather than laid out
+/// in it — the same trick [`card_progress`] uses, and for the same reason: a card must not
+/// change height because something happened to it.
+///
+/// The text is elided to the card's width rather than wrapped, so a verdict about a tree of two
+/// thousand files reads as one line and the paths themselves go in a sheet.
+pub fn card_note(ui: &Ui, card: Rect, mark: &str, text: &str, colour: Color32) {
+    let tokens = Tokens::get(ui.ctx());
+    let band = Rect::from_min_max(egui::pos2(card.left() + 10.0, card.bottom() - 16.0), egui::pos2(card.right() - 10.0, card.bottom() - 3.0));
+    ui.painter().rect_filled(band, tokens.radius_sm(), tokens.field);
+
+    let font = medium(9.0);
+    let mark = ui.painter().layout_no_wrap(mark.to_owned(), font.clone(), colour);
+    let left = band.left() + 5.0;
+    ui.painter().galley(egui::pos2(left, band.center().y - mark.size().y / 2.0), mark.clone(), colour);
+
+    let text_left = left + mark.size().x + 4.0;
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), egui::TextFormat::simple(font, colour));
+    job.wrap = egui::text::TextWrapping {
+        max_width: (band.right() - 5.0 - text_left).max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('\u{2026}'),
+    };
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(egui::pos2(text_left, band.center().y - galley.size().y / 2.0), galley, colour);
+}
+
 /// A full-width hairline, for separating rows.
 pub fn hairline(ui: &mut Ui) {
     let tokens = Tokens::get(ui.ctx());

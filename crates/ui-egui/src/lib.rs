@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use craftcenter_core::{Center, Row, Settings, Status};
+use craftcenter_core::{Center, Fetch, Level, Row, Settings, Status, Ureq, Verification};
 use craftcenter_select::{Os, Platform, Preference, select};
 use egui::{RichText, TextureHandle};
 
@@ -47,6 +47,7 @@ enum Event {
     Checked { slug: String },
     Installed { slug: String, version: String },
     Removed { slug: String },
+    Verified { slug: String, report: Verification },
     Moved { slug: String },
     Failed { slug: String, message: String },
     SelfUpdated { to: String },
@@ -60,9 +61,32 @@ struct Activity {
     total: Option<u64>,
 }
 
+/// What Verify last said about one app.
+#[derive(Clone, Debug)]
+struct Verdict {
+    report: Verification,
+    /// When it arrived, on the frame clock, so the line on the card goes away on its own.
+    at: f64,
+}
+
+/// How long a verdict stays on its card. Long enough to read a sentence, short enough that the
+/// grid is not left wearing yesterday's answers.
+const VERDICT_SECONDS: f64 = 8.0;
+
+/// A verdict with paths to show. One line on a card cannot hold a list, so the list gets a sheet.
+#[derive(Clone, Debug)]
+struct Sheet {
+    app: String,
+    report: Verification,
+}
+
 /// The application state.
-pub struct CraftCenterApp {
-    center: Arc<Center>,
+///
+/// Generic over the transport for the same reason [`Center`] is: it is what lets a test open a
+/// real frame against recorded release fixtures instead of the network, and a shell that cannot
+/// be driven headless is a shell whose layout nothing checks.
+pub struct CraftCenterApp<F: Fetch = Ureq> {
+    center: Arc<Center<F>>,
     rows: Vec<Row>,
     view: View,
     kind: ThemeKind,
@@ -76,6 +100,10 @@ pub struct CraftCenterApp {
     /// Installed apps that are not in the current install location, so the settings screen can
     /// offer to move them without reading the state file on every frame.
     misplaced: Vec<String>,
+    /// What Verify last said, per app, for the line along the foot of its card.
+    verdicts: HashMap<String, Verdict>,
+    /// The open sheet, when a verdict came back with a list of paths in it.
+    sheet: Option<Sheet>,
     picker: Option<FolderPicker>,
     message: Option<(String, Tone)>,
     draft: Settings,
@@ -86,9 +114,9 @@ pub struct CraftCenterApp {
     restart_needed: bool,
 }
 
-impl CraftCenterApp {
+impl<F: Fetch + Send + Sync + 'static> CraftCenterApp<F> {
     /// Build the app around an already-opened core.
-    pub fn new(ctx: &egui::Context, center: Center) -> Self {
+    pub fn new(ctx: &egui::Context, center: Center<F>) -> Self {
         theme::install_fonts(ctx);
         let center = Arc::new(center);
         let kind = ThemeKind::from_id(&center.settings().theme).unwrap_or_default();
@@ -108,6 +136,8 @@ impl CraftCenterApp {
             platforms,
             focus: None,
             misplaced,
+            verdicts: HashMap::new(),
+            sheet: None,
             picker: None,
             message: None,
             draft,
@@ -142,7 +172,7 @@ impl CraftCenterApp {
     /// Run `job` on a worker thread, repainting when it reports.
     fn spawn<J>(&mut self, ctx: &egui::Context, slug: &str, job: J)
     where
-        J: FnOnce(&Center, &Sender<Event>, &egui::Context) + Send + 'static,
+        J: FnOnce(&Center<F>, &Sender<Event>, &egui::Context) + Send + 'static,
     {
         self.start(slug);
         let center = Arc::clone(&self.center);
@@ -200,6 +230,20 @@ impl CraftCenterApp {
         });
     }
 
+    /// Ask what is on disk against the record of what was installed. Off the main thread: it
+    /// hashes every file of an install, which on a large app is seconds rather than milliseconds.
+    fn verify(&mut self, ctx: &egui::Context, slug: &str) {
+        let key = slug.to_owned();
+        let slug = slug.to_owned();
+        self.spawn(ctx, &key, move |center, sender, _ctx| {
+            let event = match center.verify(&slug) {
+                Ok(report) => Event::Verified { slug: slug.clone(), report },
+                Err(error) => Event::Failed { slug: slug.clone(), message: error.to_string() },
+            };
+            let _ = sender.send(event);
+        });
+    }
+
     fn launch(&mut self, slug: &str) {
         match self.center.launch(slug) {
             Ok(()) => self.message = Some((format!("Started {slug}"), Tone::Good)),
@@ -223,7 +267,7 @@ impl CraftCenterApp {
         });
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self, ctx: &egui::Context) {
         let mut changed = false;
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -246,6 +290,20 @@ impl CraftCenterApp {
                     self.activity.remove(&slug);
                     self.message = Some((format!("Removed {slug}"), Tone::Neutral));
                     changed = true;
+                }
+                Event::Verified { slug, report } => {
+                    self.activity.remove(&slug);
+                    // A list of paths needs room, so it opens a sheet; a one-line answer stays on
+                    // the card that was asked about. Both are recorded, so closing the sheet
+                    // leaves the verdict where the question was put.
+                    if report.modified.is_empty() && report.missing.is_empty() && report.extra.is_empty() {
+                        self.sheet = None;
+                    } else {
+                        let app = self.rows.iter().find(|row| row.app.slug == slug).map(|row| row.app.name.clone()).unwrap_or_else(|| slug.clone());
+                        self.sheet = Some(Sheet { app, report: report.clone() });
+                    }
+                    let at = ctx.input(|input| input.time);
+                    self.verdicts.insert(slug, Verdict { report, at });
                 }
                 Event::Moved { slug } => {
                     self.activity.remove(&slug);
@@ -484,6 +542,81 @@ impl CraftCenterApp {
 
         if activity.busy {
             widgets::card_progress(ui, tile.rect, activity.done, activity.total);
+        } else if let Some((mark, tone, line)) = self.live_verdict(ctx, &slug) {
+            widgets::card_note(ui, tile.rect, mark, &line, widgets::tone_text(ui, tone));
+        }
+    }
+
+    /// The verdict to draw on `slug`'s card, while it is still fresh.
+    ///
+    /// Asking for a repaint when it expires is the whole reason this takes a context: nothing
+    /// else will happen to the window when the eight seconds are up, and a line that stayed
+    /// until the next unrelated click would read as the answer to that click.
+    fn live_verdict(&self, ctx: &egui::Context, slug: &str) -> Option<(&'static str, Tone, String)> {
+        let verdict = self.verdicts.get(slug)?;
+        let elapsed = ctx.input(|input| input.time) - verdict.at;
+        if elapsed >= VERDICT_SECONDS {
+            return None;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(VERDICT_SECONDS - elapsed));
+        Some(verdict_line(&verdict.report))
+    }
+
+    /// The answer to Verify when it has a list in it: the verdict, then every path it rests on.
+    ///
+    /// A sheet rather than a line on the card, because "three files changed" is not an answer
+    /// until it says which three, and because the paths of a macOS bundle are longer than any
+    /// card is wide.
+    fn verify_sheet(&mut self, ctx: &egui::Context) {
+        let Some(sheet) = self.sheet.clone() else {
+            return;
+        };
+        let tokens = Tokens::get(ctx);
+        let (mark, tone, line) = verdict_line(&sheet.report);
+        let mut close = false;
+        let response = egui::Modal::new(egui::Id::new("verify-sheet")).show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            widgets::section_title(ui, &format!("{mark}  {}", sheet.app));
+            ui.add_space(6.0);
+            ui.label(RichText::new(&line).color(widgets::tone_text(ui, tone)));
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+                for (heading, paths, note) in [
+                    ("Changed since it was installed", &sheet.report.modified, ""),
+                    ("No longer there", &sheet.report.missing, ""),
+                    ("Present, and not installed by CraftCenter", &sheet.report.extra, "Not a failure: an app's own log or settings file lives here too."),
+                ] {
+                    if paths.is_empty() {
+                        continue;
+                    }
+                    ui.label(RichText::new(heading).font(medium(12.0)).color(tokens.text));
+                    if !note.is_empty() {
+                        widgets::dim(ui, note);
+                    }
+                    ui.add_space(2.0);
+                    for path in paths.iter().take(SHEET_PATHS) {
+                        ui.label(RichText::new(path).font(mono(10.0)).color(tokens.text_dim));
+                    }
+                    if paths.len() > SHEET_PATHS {
+                        widgets::dim(ui, &format!("and {} more", paths.len() - SHEET_PATHS));
+                    }
+                    ui.add_space(8.0);
+                }
+            });
+            ui.add_space(6.0);
+            widgets::hairline(ui);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if widgets::secondary_button(ui, "Close").clicked() {
+                    close = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    widgets::dim(ui, "Reinstalling replaces every file and records them again.");
+                });
+            });
+        });
+        if close || response.should_close() {
+            self.sheet = None;
         }
     }
 
@@ -511,10 +644,10 @@ impl CraftCenterApp {
                 }
                 ui.close();
             }
-            // Verify is hidden here, not removed: `Center::verify` only re-hashes the AppImage or
-            // launcher file, so on a DMG-installed .app or an unpacked Windows build it checks one
-            // file out of many and calls that "verified". It returns once an install-time manifest
-            // covers every file a format writes. The CLI's `verify` is unaffected.
+            if ui.add_enabled(installed, egui::Button::new("Verify")).clicked() {
+                self.verify(ctx, &slug);
+                ui.close();
+            }
             if ui.button("Release notes").clicked() {
                 if let Err(error) = self.center.open_release_notes(&slug) {
                     self.message = Some((error.to_string(), Tone::Danger));
@@ -765,6 +898,24 @@ impl CraftCenterApp {
     }
 }
 
+/// How many paths of one list the sheet shows before it says how many more there are. A tree
+/// that has lost two thousand files does not need two thousand lines to make the point.
+const SHEET_PATHS: usize = 40;
+
+/// A verdict as a mark, a tone and one line: what the card paints and what the sheet heads with,
+/// so the two cannot disagree about what Verify said.
+fn verdict_line(report: &Verification) -> (&'static str, Tone, String) {
+    let (mark, tone) = match report.level() {
+        Level::Ok => ("\u{2713}", Tone::Good),
+        // Changed bytes are the serious one; a file that is merely gone is a broken install
+        // rather than a replaced one, and reads as a warning.
+        Level::Modified => ("\u{26a0}", Tone::Danger),
+        Level::Incomplete => ("\u{26a0}", Tone::Warning),
+        Level::NotVerifiable => ("\u{00b7}", Tone::Neutral),
+    };
+    (mark, tone, report.summary())
+}
+
 /// The grid. A card may not be squeezed below [`TILE_MIN_WIDTH`]; when it would be, a column is
 /// dropped. Three across is where a wide window settles — a fourth would leave each card
 /// narrower than a name, a version and a button read well in.
@@ -956,7 +1107,7 @@ fn platform_tags(ui: &mut egui::Ui, platforms: &[Os]) {
     }
 }
 
-impl CraftCenterApp {
+impl<F: Fetch + Send + Sync + 'static> CraftCenterApp<F> {
     /// Draw one frame.
     ///
     /// Takes a `Ui` rather than implementing a windowing framework's trait, so this crate never
@@ -965,7 +1116,7 @@ impl CraftCenterApp {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
-        self.drain_events();
+        self.drain_events(ctx);
 
         // One check per launch, started after the first frame so the window appears immediately
         // rather than after the network answers.
@@ -987,6 +1138,7 @@ impl CraftCenterApp {
 
         self.top_bar(ui);
         self.status_bar(ui);
+        self.verify_sheet(ctx);
 
         let tokens = Tokens::get(ctx);
         egui::CentralPanel::default_margins().frame(egui::Frame::NONE.fill(tokens.dock).inner_margin(egui::Margin::same(12))).show(ui, |ui| match self.view {
@@ -1003,6 +1155,31 @@ mod tests {
 
     fn names(slugs: &[&str]) -> Vec<String> {
         slugs.iter().map(|slug| (*slug).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_verdict_reads_as_its_level_in_both_places_it_is_drawn() {
+        let sound = Verification { listed: 4, ..Verification::default() };
+        assert_eq!(verdict_line(&sound).1, Tone::Good);
+        assert!(verdict_line(&sound).2.contains("4 files match"));
+
+        let changed = Verification { listed: 4, modified: vec!["bin/app".to_owned()], ..Verification::default() };
+        assert_eq!(verdict_line(&changed).1, Tone::Danger, "changed bytes are the serious answer");
+
+        let gone = Verification { listed: 4, missing: vec!["bin/app".to_owned()], ..Verification::default() };
+        assert_eq!(verdict_line(&gone).1, Tone::Warning, "a file that is simply gone is a broken install, not a replaced one");
+
+        let unknown = Verification::not_verifiable("installed before CraftCenter recorded anything");
+        assert_eq!(verdict_line(&unknown).1, Tone::Neutral);
+        assert_eq!(verdict_line(&unknown).2, "installed before CraftCenter recorded anything");
+    }
+
+    /// An extra file is reported and is not a failure, so it must not turn the card red.
+    #[test]
+    fn a_file_craftcenter_did_not_install_does_not_make_a_verdict_a_failure() {
+        let extra = Verification { listed: 4, extra: vec!["photocraft.log".to_owned()], ..Verification::default() };
+        assert_eq!(verdict_line(&extra).1, Tone::Good);
+        assert!(verdict_line(&extra).2.contains("did not install"), "{}", verdict_line(&extra).2);
     }
 
     #[test]
