@@ -32,6 +32,8 @@ fn pretend_photocraft_is_installed(root: &Path) -> std::path::PathBuf {
     std::fs::write(manifests.join("photocraft.json"), &text).expect("write the manifest");
     let digest = craftcenter_verify::hex(&craftcenter_verify::sha256_reader(text.as_bytes()).expect("hash"));
 
+    // The three paths go in TOML *literal* strings, in single quotes, because a Windows path is
+    // full of backslashes and TOML reads `\U` in a quoted string as the start of an escape.
     let state = format!(
         "[installed.photocraft]\n\
          version = \"0.3.0\"\n\
@@ -39,10 +41,10 @@ fn pretend_photocraft_is_installed(root: &Path) -> std::path::PathBuf {
          asset = \"photocraft-0.3.0-linux-x86_64.AppImage\"\n\
          sha256 = \"{asset}\"\n\
          format = \"app-image\"\n\
-         dir = \"{dir}\"\n\
-         root = \"{home}\"\n\
+         dir = '{dir}'\n\
+         root = '{home}'\n\
          manifest = \"{digest}\"\n\
-         launcher = \"{launcher}\"\n\
+         launcher = '{launcher}'\n\
          installed_at = 1700000000\n",
         asset = "0".repeat(64),
         dir = dir.display(),
