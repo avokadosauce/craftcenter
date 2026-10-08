@@ -90,7 +90,11 @@ fn main() -> ExitCode {
     }
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    match eframe::run_native("CraftCenter", options, Box::new(|cc| Ok(Box::new(Shell { app: CraftCenterApp::new(&cc.egui_ctx, center) })))) {
+    match eframe::run_native(
+        "CraftCenter",
+        options,
+        Box::new(|cc| Ok(Box::new(Shell { app: CraftCenterApp::new(&cc.egui_ctx, center).with_folder_picker(Box::new(folder_picker)) }))),
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("craftcenter: the window could not be opened: {error}");
@@ -98,6 +102,12 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The platform's own folder dialog, which is the only part of the window the shell crate does
+/// not draw itself. It blocks while it is open, as a modal dialog should.
+fn folder_picker(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new().set_title("Where should the Crafting Apps be installed?").set_directory(start).pick_folder()
 }
 
 /// CraftCenter's own window icon. Absent until the project draws one, and a missing icon is not

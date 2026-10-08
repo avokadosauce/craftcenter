@@ -10,9 +10,16 @@
 //! window asks the system for ordinary decorations instead. [`decorations_wanted`] is what the
 //! binary consults when it builds the window.
 
-use egui::{Align, Context, Layout, RichText, Sense, Ui, Vec2, ViewportCommand};
+use egui::{Align, Context, Id, Layout, PointerButton, Pos2, Rect, RichText, Sense, Ui, Vec2, ViewportCommand};
 
 use crate::theme::Tokens;
+
+/// One caption button's footprint. Three of them sit flush in the top-right corner.
+const CAPTION_BUTTON: Vec2 = Vec2::new(40.0, 30.0);
+
+/// Below this the strip is a sliver nobody can aim at, so it is not claimed at all — the window
+/// is simply too narrow to drag by its bar, and the caption buttons keep every pixel they need.
+const MIN_DRAG_WIDTH: f32 = 8.0;
 
 /// Should the window be drawn with the operating system's own decorations?
 ///
@@ -27,9 +34,14 @@ pub fn decorations_wanted() -> bool {
 
 /// Minimize, maximize/restore and close, flush in the top-right corner — drawn only when the app
 /// owns its chrome.
-pub fn caption_buttons(ui: &mut Ui, ctx: &Context) {
+///
+/// Returns the strip they occupy, which is what the drag region has to stop short of. With the
+/// system's own decorations nothing is drawn and the returned rect is the empty sliver at the
+/// right edge, so the drag region simply runs to the end of the bar.
+pub fn caption_buttons(ui: &mut Ui, ctx: &Context) -> Rect {
+    let available = ui.available_rect_before_wrap();
     if decorations_wanted() {
-        return;
+        return Rect::from_min_max(available.right_top(), available.right_bottom());
     }
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -44,14 +56,15 @@ pub fn caption_buttons(ui: &mut Ui, ctx: &Context) {
         if caption_button(ui, "\u{2500}", false).clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
         }
-    });
+        ui.min_rect()
+    })
+    .inner
 }
 
 /// One caption button. Close turns the system red on hover, as it does in their apps.
 fn caption_button(ui: &mut Ui, glyph: &str, is_close: bool) -> egui::Response {
     let tokens = Tokens::get(ui.ctx());
-    let size = Vec2::new(40.0, 30.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, response) = ui.allocate_exact_size(CAPTION_BUTTON, Sense::click());
 
     let hovered = response.hovered();
     let fill = match (hovered, is_close) {
@@ -65,30 +78,42 @@ fn caption_button(ui: &mut Ui, glyph: &str, is_close: bool) -> egui::Response {
     response
 }
 
+/// The part of the bar that drags the window: everything between what the left-hand content ends
+/// at and where the caption buttons begin.
+///
+/// Pure arithmetic, so the one thing about the title bar that can be checked without opening a
+/// window — that the drag region never covers a button or a tab — is checked by the test suite.
+/// `None` means there is nothing left worth claiming.
+pub fn drag_strip_rect(bar: Rect, content_right: f32, caption_left: f32) -> Option<Rect> {
+    let left = content_right.max(bar.left());
+    let right = caption_left.min(bar.right());
+    let width = right - left;
+    if !width.is_finite() || width < MIN_DRAG_WIDTH {
+        return None;
+    }
+    Some(Rect::from_min_max(Pos2::new(left, bar.top()), Pos2::new(right, bar.bottom())))
+}
+
 /// Make the empty part of the top bar drag the window, and a double-click there maximize it.
 ///
-/// Called once per frame after the panels are laid out, so it only claims pointer input that no
-/// widget took.
-pub fn handle_window_gestures(ctx: &Context) {
+/// This is a widget, not a pass over the frame's input: the strip is a rect with a `Response`,
+/// and `drag_started_by` fires on the frame the primary button goes down on it — which is the
+/// only moment [`ViewportCommand::StartDrag`] is accepted by the platform. Asking the context
+/// afterwards whether the pointer was "over egui" cannot work here, because the title bar *is*
+/// egui: that is true over the bar's bare background as much as over a button, so the window
+/// never moved on Windows or Linux.
+pub fn window_drag_strip(ui: &Ui, ctx: &Context, bar: Rect, content_right: f32, caption_left: f32) {
     if decorations_wanted() {
         return;
     }
-    let bar_height = 38.0;
-    let Some(pointer) = ctx.input(|i| i.pointer.interact_pos()) else {
+    let Some(rect) = drag_strip_rect(bar, content_right, caption_left) else {
         return;
     };
-    if pointer.y > bar_height {
-        return;
-    }
-    // `is_pointer_over_egui` is true when a widget — a button, a tab — is under the pointer, so
-    // the gap between them is what remains, which is exactly what should drag the window.
-    if ctx.is_pointer_over_egui() {
-        return;
-    }
-    if ctx.input(|i| i.pointer.any_pressed() && i.pointer.primary_down()) {
+    let response = ui.interact(rect, Id::new("craftcenter-titlebar-drag"), Sense::click_and_drag());
+    if response.drag_started_by(PointerButton::Primary) {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
     }
-    if ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+    if response.double_clicked() {
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
@@ -103,6 +128,11 @@ pub fn window_title(ui: &mut Ui, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 38 px bar across a 940 px window, the width the app opens at.
+    fn bar() -> Rect {
+        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(940.0, 38.0))
+    }
 
     #[test]
     fn macos_keeps_the_system_decorations() {
@@ -122,5 +152,51 @@ mod tests {
         for value in ["0", "false", "no", ""] {
             assert_ne!(value, "1", "only the exact value 1 turns the system decorations back on");
         }
+    }
+
+    #[test]
+    fn the_drag_strip_sits_between_the_tabs_and_the_caption_buttons() {
+        let bar = bar();
+        let content_right = 210.0; // past "CraftCenter" and the three tabs
+        let caption_left = bar.right() - 3.0 * CAPTION_BUTTON.x;
+        let strip = drag_strip_rect(bar, content_right, caption_left).expect("a 940 px window has room to drag");
+
+        assert_eq!(strip.left(), content_right, "the strip must not cover a tab");
+        assert_eq!(strip.right(), caption_left, "the strip must not cover a caption button");
+        assert_eq!(strip.top(), bar.top());
+        assert_eq!(strip.bottom(), bar.bottom(), "the whole height of the bar drags");
+    }
+
+    #[test]
+    fn the_drag_strip_never_overlaps_a_caption_button() {
+        let bar = bar();
+        // Every width the window can be resized to, from its minimum to a wide monitor.
+        for width in (520..=2560).step_by(7) {
+            let bar = Rect::from_min_max(bar.min, Pos2::new(width as f32, bar.bottom()));
+            let caption_left = bar.right() - 3.0 * CAPTION_BUTTON.x;
+            let Some(strip) = drag_strip_rect(bar, 210.0, caption_left) else {
+                continue;
+            };
+            assert!(strip.right() <= caption_left, "the strip reached into the caption buttons at {width} px");
+            assert!(strip.left() >= 210.0, "the strip reached back over the tabs at {width} px");
+            assert!(bar.contains_rect(strip), "the strip left the bar at {width} px");
+        }
+    }
+
+    #[test]
+    fn a_window_too_narrow_to_leave_a_gap_claims_nothing() {
+        let bar = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(300.0, 38.0));
+        // The tabs run right up to the caption buttons.
+        assert_eq!(drag_strip_rect(bar, 185.0, 180.0), None, "a negative gap is not a drag region");
+        assert_eq!(drag_strip_rect(bar, 180.0, 184.0), None, "a 4 px sliver is not worth claiming");
+        assert!(drag_strip_rect(bar, 180.0, 188.0).is_some(), "8 px is enough to aim at");
+    }
+
+    #[test]
+    fn the_strip_is_clamped_to_the_bar_even_if_the_caller_is_wrong() {
+        let bar = bar();
+        let strip = drag_strip_rect(bar, -50.0, 5_000.0).expect("there is room");
+        assert_eq!(strip.left(), bar.left());
+        assert_eq!(strip.right(), bar.right());
     }
 }

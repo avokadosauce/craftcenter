@@ -24,4 +24,5 @@ and they are not used in this project.
 
 Rust dependencies (egui, eframe, ureq, rustls, sha2, serde, zip, flate2, tar and their transitive
 dependencies) are fetched through crates.io under their own permissive licenses, mostly MIT and/or
-Apache-2.0.
+Apache-2.0. Among them, rfd (https://github.com/PolyMeilex/rfd) is used for the native folder
+dialog behind Settings > Install location, under the MIT license.

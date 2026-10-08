@@ -20,6 +20,7 @@ craftcenter-core = { workspace = true }
 craftcenter-ui-egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
 egui = { workspace = true }
+rfd = { workspace = true }
 env_logger = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }

@@ -34,6 +34,7 @@ dirs = "7"
 eframe = { version = "0.36", default-features = false }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal", "wayland"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 env_logger = "0.11"

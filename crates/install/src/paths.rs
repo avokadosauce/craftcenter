@@ -78,6 +78,14 @@ impl Paths {
         }
     }
 
+    /// The same layout with the apps kept somewhere else.
+    ///
+    /// Only the apps move. State, cache and launchers stay where the platform puts them, because
+    /// they are CraftCenter's own bookkeeping rather than anything the user chose a place for.
+    pub fn with_apps(self, apps: PathBuf) -> Self {
+        Self { apps, ..self }
+    }
+
     pub fn app_dir(&self, slug: &str) -> PathBuf {
         self.apps.join(slug)
     }
@@ -119,6 +127,21 @@ mod tests {
             assert!(path.starts_with(root), "{} escaped {}", path.display(), root.display());
         }
         assert_eq!(paths.version_dir("photocraft", "0.3.0"), root.join("apps/photocraft/0.3.0"));
+    }
+
+    #[test]
+    fn choosing_where_apps_go_moves_only_the_apps() {
+        let root = Path::new("/tmp/example-root");
+        let chosen = PathBuf::from("/tmp/somewhere-else");
+        let default = Paths::rooted(root);
+        let paths = Paths::rooted(root).with_apps(chosen.clone());
+        assert_eq!(paths.apps, chosen);
+        assert_eq!(paths.app_dir("photocraft"), chosen.join("photocraft"));
+        // The bookkeeping is CraftCenter's own and does not follow the apps around.
+        assert_eq!(paths.state, default.state);
+        assert_eq!(paths.cache, default.cache);
+        assert_eq!(paths.bin, default.bin);
+        assert_eq!(paths.data, default.data);
     }
 
     #[test]
