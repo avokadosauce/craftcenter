@@ -352,6 +352,28 @@ pub fn launch(paths: &Paths, app: &App) -> Result<(), Error> {
     std::process::Command::new(&launcher).spawn().map(|_| ()).map_err(|source| Error::Io { path: installed.launcher.clone(), source })
 }
 
+/// Hand a folder to the system's file manager, or a URL to the user's browser.
+///
+/// The program is started with the target as a single argument and no shell in between, so a
+/// path out of the state file cannot become a command. Nothing is waited for: `xdg-open` stays
+/// alive as long as the window it opened, and a failure after the handler has been started is
+/// the handler's to report, not CraftCenter's.
+pub fn open_externally(target: &str) -> Result<(), Error> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        // `explorer` takes both a folder and a URL, and unlike `cmd /c start` it is not a shell.
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|source| Error::Command { command: program.to_owned(), message: source.to_string() })
+}
+
 /// Remove an app: every version directory, the launcher, and the desktop entry and icon this
 /// program wrote. Anything the app itself created in the user's home is left alone.
 pub fn remove(paths: &Paths, app: &App) -> Result<(), Error> {

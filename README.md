@@ -39,9 +39,13 @@
 The [Crafting Apps](https://getartcraft.com/apps) each publish their own GitHub releases, and none
 of them checks whether a newer version exists. CraftCenter is the piece that was missing:
 
-- **A catalogue** of every crafting app, with its tagline, the version you have, and the version
-  that is out.
-- **Install, Update, Launch and Remove** per app, and **Update all**.
+- **A catalogue** of every crafting app as a grid of cards — icon, name, tagline, which platforms
+  the release covers, the version you have and the version that is out — grouped into *Installed*
+  and *Available*, three across on a wide window and reflowing to two or one as it narrows. The
+  grid takes the arrow keys, and Enter does whatever the selected card's button says.
+- **Install, Update, Launch and Remove** per app, and **Update all**. Each card carries its one
+  lead action as a button, with Launch, Open folder, Verify, Release notes and Remove behind its
+  `…` menu.
 - **Checksum verification, always.** Every download is hashed and compared with the release's own
   `SHA256SUMS.txt` before anything is installed. An asset the manifest does not list is refused; a
   download that does not match is deleted.

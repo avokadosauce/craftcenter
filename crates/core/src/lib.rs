@@ -318,6 +318,35 @@ impl<F: Fetch> Center<F> {
         craftcenter_install::remove(&self.paths, app).map_err(Error::from)
     }
 
+    /// Show an installed app's folder in the system's file manager.
+    pub fn open_install_dir(&self, slug: &str) -> Result<(), Error> {
+        let app = self.app(slug)?;
+        let state = State::load(&self.paths.state)?;
+        let installed = state.get(slug).ok_or_else(|| InstallError::NotInstalled { app: app.name.clone() })?;
+        craftcenter_install::open_externally(&installed.dir).map_err(Error::from)
+    }
+
+    /// Where this app's releases are published, as specific a page as is known: the exact tag
+    /// when a release has been looked up or installed, the releases index otherwise.
+    pub fn release_notes_url(&self, slug: &str) -> Result<String, Error> {
+        let app = self.app(slug)?;
+        let tag = self
+            .cache
+            .get(slug)
+            .and_then(|entry| entry.release)
+            .map(|release| release.tag)
+            .or_else(|| State::load(&self.paths.state).ok().and_then(|state| state.get(slug).map(|installed| installed.tag.clone())));
+        Ok(match tag {
+            Some(tag) => format!("https://github.com/{}/releases/tag/{tag}", app.repo),
+            None => format!("https://github.com/{}/releases", app.repo),
+        })
+    }
+
+    /// Open [`Self::release_notes_url`] in the user's browser.
+    pub fn open_release_notes(&self, slug: &str) -> Result<(), Error> {
+        craftcenter_install::open_externally(&self.release_notes_url(slug)?).map_err(Error::from)
+    }
+
     /// Re-hash what is installed and compare it with the digest recorded at install time.
     pub fn verify(&self, slug: &str) -> Result<(), Error> {
         let app = self.app(slug)?;
