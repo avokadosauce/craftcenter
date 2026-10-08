@@ -688,17 +688,9 @@ pub fn move_app(paths: &Paths, app: &App, destination: &Path, progress: Progress
     // a new folder, re-aimed the launcher at it and left the record saying all was well would
     // launder it. So the copy is checked against the record of the install as well, using the
     // digests the copy has just computed rather than reading the whole tree a third time.
-    if let Recorded::Manifest(manifest) = recorded(paths, &app.slug, &installed)? {
-        let report = match manifest_path(&from, Path::new(&installed.dir)) {
-            Some(prefix) => manifest.compare(&copier.observed.under(&prefix)),
-            // A record whose version directory is not inside the home it names: read the tree
-            // itself rather than let the question go unanswered.
-            None => manifest.verify_tree(Path::new(&installed.dir))?,
-        };
-        if !report.is_intact() {
-            let _ = std::fs::remove_dir_all(&staged);
-            return Err(Error::NotAsInstalled { app: app.name.clone(), what: report.summary() });
-        }
+    if let Err(error) = check_against_record(paths, app, &installed, &from, &copier.observed) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error);
     }
 
     std::fs::rename(&staged, &to).map_err(fs::io_err(&to))?;
@@ -735,6 +727,26 @@ pub fn move_app(paths: &Paths, app: &App, destination: &Path, progress: Progress
     state.save(&paths.state)?;
     let _ = std::fs::remove_dir_all(&from);
     Ok(moved)
+}
+
+/// Is what was copied a copy of the install that was recorded?
+///
+/// `Ok(())` when it is — and also when there is no record to check it against, because an app
+/// installed before CraftCenter recorded manifests has to stay movable.
+fn check_against_record(paths: &Paths, app: &App, installed: &Installed, from: &Path, observed: &Observed) -> Result<(), Error> {
+    let Recorded::Manifest(manifest) = recorded(paths, &app.slug, installed)? else {
+        return Ok(());
+    };
+    let report = match manifest_path(from, Path::new(&installed.dir)) {
+        Some(prefix) => manifest.compare(&observed.under(&prefix)),
+        // A record whose version directory is not inside the home it names: read the tree itself
+        // rather than let the question go unanswered.
+        None => manifest.verify_tree(Path::new(&installed.dir))?,
+    };
+    if report.is_intact() {
+        return Ok(());
+    }
+    Err(Error::NotAsInstalled { app: app.name.clone(), what: report.summary() })
 }
 
 /// How many bytes of file content a tree holds. Symlinks count as nothing: they are recreated,
