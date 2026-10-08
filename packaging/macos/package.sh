@@ -16,7 +16,7 @@ set -euo pipefail
 . "$(dirname "$0")/../env.sh"
 
 APP_NAME="CraftCenter"
-APP_ID="io.github.avokadosauce.craftcenter"
+# The bundle identifier lives in Info.plist.in and nowhere else, so there is one place to change it.
 SIGN_IDENTITY="${MACOS_SIGN_IDENTITY:--}"
 
 mkdir -p "$DIST" "$CARGO_TARGET_DIR"

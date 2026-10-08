@@ -16,7 +16,7 @@
 # than no integration at all.
 set -u
 
-here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+here="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 real_bin="$here/usr/bin/craftcenter"
 
 # Opt-out for anyone who does not want files written outside the AppImage
@@ -36,7 +36,7 @@ install_desktop_integration() {
 	# unquoted into a generated file. A path a user would realistically hit
 	# (containing a space) is fine; these are not.
 	case "$appimage_path" in
-	*'"'* | *'`'* | *'$'* | *'\'* | *'%'*)
+	*'"'* | *'`'* | *'$'* | *\\* | *'%'*)
 		return 1
 		;;
 	esac

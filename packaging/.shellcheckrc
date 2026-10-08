@@ -8,6 +8,11 @@
 # automatically for any script under this tree.
 external-sources=true
 
+# `source=../env.sh` in each script is written relative to that script, which is what
+# `$(dirname "$0")` means when it runs. Without this, shellcheck resolves the directive against
+# its own working directory instead and reports SC1091 for a file that is plainly there.
+source-path=SCRIPTDIR
+
 # Dash/sh is deliberate for AppRun (it is executed by whatever /bin/sh an
 # AppImage runtime provides, which is not guaranteed to be bash), while the
 # packaging scripts proper are bash. Each file says so itself via a
