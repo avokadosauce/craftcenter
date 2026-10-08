@@ -1,0 +1,3 @@
+# No custom runner labels; every job uses GitHub-hosted runners.
+self-hosted-runner:
+  labels: []

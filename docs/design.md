@@ -1,9 +1,12 @@
 # CraftCenter — design
 
-> **Status: proposal.** This document records what was measured about how the Crafting Apps are
-> built and shipped, and the design that follows from it. Nothing here is implemented yet.
-> Every claim below was checked against the upstream repositories and their published releases
-> on 2026-10-08; the file path or URL is given so each can be rechecked.
+> **Status: built.** This document records what was measured about how the Crafting Apps are built
+> and shipped, and the design that follows from it. The design below is what the code now does;
+> §4 records which way each decision went. Every measurement was taken against the upstream
+> repositories and their published releases on 2026-10-08, and the file path or URL is given so
+> each can be rechecked. The upstream moves quickly — several apps shipped new releases during the
+> hours this was written — so treat every version number here as a dated observation, not a
+> constant.
 
 CraftCenter is an **unaffiliated, third-party** installer and updater for the
 [Crafting Apps](https://getartcraft.com/apps) — the clean-room Rust creative tools published by the
@@ -32,8 +35,7 @@ Cargo.toml          [workspace] resolver = "3", members = ["crates/*", "apps/*",
 rustfmt.toml        max_width = 160, use_small_heuristics = "Max"
 clippy.toml         allow-{unwrap,expect,panic,indexing-slicing}-in-tests = true
 .cargo/config.toml  [alias] xtask = "run -p xtask --"
-AGENTS.md CLAUDE.md ATTRIBUTION.md NOTICE README.md ROADMAP.md SECURITY.md
-LICENSE-MIT LICENSE-APACHE
+AGENTS.md CLAUDE.md ATTRIBUTION.md NOTICE README.md ROADMAP.md SECURITY.md LICENSE.md
 apps/<app>  apps/<app>-cli  apps/<app>-web
 crates/*    xtask/    packaging/    assets/{app-icon,fonts,icons}
 .github/workflows/  ci.yml release.yml packaging-lint.yml freebsd.yml windows-arm64.yml
@@ -183,8 +185,12 @@ with the same `Exec=`, `AppRun`'s own `cmp -s` finds it identical and leaves it 
 ### 1.7 Licensing, and the one hard boundary
 
 App code and original app assets are **MIT OR Apache-2.0**. Each app's own icon is the app owner's
-original work under that same dual licence — verified in `photocraft/ATTRIBUTION.md`
-(`assets/app-icon/` → "MIT OR Apache-2.0") and `filmcraft/ATTRIBUTION.md`.
+original work under that same dual licence. This was checked for all twelve apps individually, not
+inferred from one: nine state it in `ATTRIBUTION.md`, and the remaining three (`vectorcraft`,
+`lightcraft`, `designcraft`) have no `ATTRIBUTION.md` at all but ship
+`assets/app-icon/LICENSE.txt`, which says the artwork — naming the `hicolor/` renders this project
+uses — is "original artwork made for this project by the project owner … licensed like the rest of
+&lt;the app&gt;, under either of Apache License 2.0 or the MIT license, at your option".
 
 The exception is `docs/brand/`: the **ArtCraft name, wordmark and mark are trademarks and are not
 open source** (`photocraft/docs/brand/LICENSE-brand.txt`). The permission granted there covers use
@@ -256,8 +262,9 @@ So:
   UI says "rate limited until &lt;x-ratelimit-reset&gt;" instead of showing an error per row.
 - **404 is a state, not a failure:** "no release yet" renders as a greyed row.
 - Checks are scheduled (default: daily) and cached on disk. Never per frame, never per repaint.
-- An optional personal access token in settings raises the fallback budget to 5000/hour. Off by
-  default; most users will never need it, because the primary path spends nothing.
+- **No access token, ever** — not even as an optional setting. The primary path spends no API
+  quota, so a credential would buy nothing, and asking for one would be asking a user to hand a
+  program a secret it has no use for. A test asserts the settings file has no token field.
 
 ### 2.3 Verification, honestly described
 
@@ -296,27 +303,26 @@ Indistinguishable in shape from one of theirs, because the conventions are their
 
 ```
 Cargo.toml              [workspace] resolver = "3", members = ["crates/*", "apps/*", "xtask"]
-                        edition 2024 · license "MIT OR Apache-2.0" · unsafe_code = "forbid"
+                        edition 2024 · PolyForm Noncommercial 1.0.0 · unsafe_code = "forbid"
 rustfmt.toml            max_width = 160, use_small_heuristics = "Max"
 clippy.toml             allow-{unwrap,expect,panic,indexing-slicing}-in-tests
 .cargo/config.toml      [alias] xtask = "run -p xtask --"
-AGENTS.md CLAUDE.md ATTRIBUTION.md NOTICE README.md ROADMAP.md SECURITY.md
-LICENSE-MIT LICENSE-APACHE
+AGENTS.md CLAUDE.md ATTRIBUTION.md NOTICE README.md ROADMAP.md SECURITY.md LICENSE.md
 catalogue/apps.toml     the data file — one row per app
 crates/
   catalogue   L0  parse and validate catalogue/apps.toml (embedded with include_str!)
   verify      L0  SHA256SUMS.txt parsing, streaming SHA-256
-  releases    L1  release discovery: the redirect probe, the API fallback, the on-disk cache
   select      L1  asset selection: rank a real asset list for (os, arch, preference)
-  install     L2  per-platform install / launch / remove, state file, atomic flip
-  core        L3  the facade the CLI and GUI share: catalogue + state + update plan
-  ui-egui     L4  the egui shell and its theme tokens
+  releases    L2  release discovery: the redirect probe, the API fallback, the on-disk cache
+  install     L3  per-platform install / launch / remove, state file, atomic flip
+  core        L4  the facade the CLI and GUI share: catalogue + state + update plan
+  ui-egui     L5  the egui shell and its theme tokens (no eframe or winit: the binary owns those)
 apps/craftcenter        the desktop app (eframe + wgpu)
 apps/craftcenter-cli    the headless CLI
-xtask/                  layers | catalogue | fixtures | ci
+xtask/                  layers | catalogue
 packaging/              env.sh · linux/ · macos/ · windows/
 .github/workflows/      ci.yml · release.yml · packaging-lint.yml
-assets/                 app-icon/ · fonts/ · icons/
+assets/                 app-icon/ · fonts/
 ```
 
 Layering is enforced by `cargo xtask layers`, as theirs is: a crate may depend only on lower
@@ -344,7 +350,7 @@ app_id      = "ai.storyteller.photocraft"
 binary      = "photocraft"
 cli         = "photocraft-cli"
 asset_stems = ["photocraft"]          # candidates, newest first
-icon        = "assets/app-icon/photocraft-64.png"
+icon        = "photocraft-64.png"            # under assets/app-icon/
 site        = "https://getartcraft.com/apps/photocraft"
 
 [[app]]
@@ -387,7 +393,8 @@ and an integrated strip on macOS, colours read from a `Tokens` struct and never 
   size, and per-row **Install** / **Update** / **Launch** / **Remove** with inline progress.
   **Update all** in the header.
 - **Settings** — install location, channel (latest published release only, for now), check
-  frequency, optional GitHub token, "keep previous version".
+  frequency, "keep previous version". No token field, and no telemetry switch, because there is
+    neither.
 - **About** — version and build commit, the licence, the attribution list, and the statement that
   CraftCenter is unofficial.
 
@@ -445,38 +452,71 @@ ones produce unsigned artifacts and a warning.
 
 ## 4. Decisions
 
-Each needs a ruling before implementation starts; the recommendation is what will be built absent
-one.
+All twelve were ruled on 2026-10-08. The **Ruling** column is what the code does; where it differs
+from the original recommendation, the difference is stated.
 
-| | Decision | Options | Recommendation |
+| | Decision | Options | Ruling |
 | --- | --- | --- | --- |
-| **D1** | Platforms for v1 | all three · Linux only | **All three.** Their assets cover all three, and the selection logic is per-platform data either way. Be precise about what is *proven*: the CI matrix proves it compiles and that the unit and integration tests pass on Linux, macOS and Windows; the CLI is exercised end to end on Linux. GUI behaviour on macOS and Windows stays unverified until a person runs it |
-| **D2** | GUI toolkit | egui 0.36 + eframe, their tokens re-implemented · reuse `photocraft-ui-egui` · iced / gpui | **egui 0.36 + eframe + wgpu**, pinned to the version every app uses, with the tokens re-implemented from their published values. Their `AGENTS.md` says repos share learnings and never code, and their UI crate sits on top of their engine — it is not a reusable toolkit |
-| **D3** | Is `artcraft` in the catalogue? | listed but not installable · full support behind an "allow unverified" switch · omitted | **Listed, not installable in v1.** Its releases are a different shape entirely (`ArtCraft_0.41.0_x64-setup.exe`, `_x64_en-US.msi`, `ArtCraft_universal.app.tar.gz`, tag `artcraft-v0.41.0`), there is **no `SHA256SUMS.txt`**, there is no Linux build, and the licence is non-OSI. A row with "Download from GitHub ↗" is honest and ships no unverifiable install path |
-| **D4** | Install scope | per-user only · also offer system install | **Per-user only in v1**, never elevating. The `.msi` and `deb`/`rpm`/`flatpak` paths stay a v2 item behind an explicit choice |
-| **D5** | Update strategy | full download · zsync deltas | **Full download.** Only `photocraft` publishes a `.zsync`, and zsync means implementing rsync rolling checksums. The format table already records `.zsync`, so a delta path can be added later for the apps that have one |
-| **D6** | How CraftCenter updates itself | notify only · self-replace | **Notify, with a one-click open of the release page, in v1.** A self-replacing updater across three platforms is where installers break, and it cannot be verified on a machine with no display. v2, once the same verified-download core has run in anger |
-| **D7** | Licence | MIT OR Apache-2.0 · one of them · something else | **MIT OR Apache-2.0**, matching theirs, with `LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE` and `ATTRIBUTION.md` |
-| **D8** | Name and branding | CraftCenter · a `<x>craft` name · something else | **CraftCenter.** The trademark terms forbid the ArtCraft name in the name, logo, icon or domain of anything else, so "ArtCraft Center" is out; their app-naming grammar is `{Function}Craft`, which "CraftCenter" deliberately inverts to read as a hub rather than an app. Needs a ruling — it is a naming call, not a technical one |
-| **D9** | Per-app icons | commit them (attributed) · fetch at runtime · none | **Commit them.** Each app's icon is its owner's original work under MIT OR Apache-2.0, so redistribution with attribution is permitted; `xtask catalogue --icons` fetches and attributes them. The ArtCraft wordmark and mark are never used |
-| **D10** | Ask upstream? | open one issue · just read releases | **Both:** build against the releases, and open one upstream issue asking whether they would bless a third-party installer, publish a catalogue endpoint, and add `SHA256SUMS.txt` to `artcraft`. Public and attributable, so it needs a ruling first |
-| **D11** | GitHub token | optional, off by default · required · never | **Optional, off by default**, stored in the OS keyring where one exists. The primary check path costs no API quota, so the token only widens the fallback |
-| **D12** | A `-web` build | no · yes | **No.** Every crafting app ships one, but a page in a browser cannot install a desktop application. The README says so, so the omission reads as deliberate |
+| **D1** | Platforms for v1 | all three · Linux only | **All three.** Built for Linux, macOS and Windows; the CI matrix compiles and tests on all three. What a person has actually run is listed in `README.md`. |
+| **D2** | GUI toolkit | egui 0.36 + eframe, their tokens re-implemented · reuse `photocraft-ui-egui` · iced / gpui | **egui 0.36 + eframe + wgpu**, the version every Crafting App pins, with the theme tokens re-implemented from their published values. `craftcenter-ui-egui` does not depend on eframe or winit — it draws into a `Ui` and the binary owns the event loop — so the shell stays buildable and testable without a display. |
+| **D3** | Is `artcraft` in the catalogue? | listed but not installable · full support behind an "allow unverified" switch · omitted | **Not in the catalogue at all.** Stronger than the recommendation: no row, no link. CraftCenter is for the creative-suite apps. A test asserts `artcraft` is absent. |
+| **D4** | Install scope | per-user only · also offer system install | **Per-user only.** Nothing elevates. Asset selection knows about the `.msi` and refuses it by default, naming elevation as the reason; the switch exists in the type and is off. |
+| **D5** | Update strategy | full download · zsync deltas | **Full download.** The `.zsync` index is recorded in the format table for a later delta path. |
+| **D6** | How CraftCenter updates itself | notify only · self-replace | **Self-replace, in v1.** Against the recommendation; see below. |
+| **D7** | Licence | MIT OR Apache-2.0 · one of them · something else | **PolyForm Noncommercial 1.0.0** (`LICENSE.md`): any noncommercial purpose, no warranty or liability, no selling. Not MIT or Apache-2.0, which permit sale. See below. |
+| **D8** | Name and branding | CraftCenter · a `<x>craft` name · something else | **CraftCenter.** |
+| **D9** | Per-app icons | commit them (attributed) · fetch at runtime · none | **Committed, attributed.** Each app's `assets/app-icon/LICENSE.txt` was read individually and licenses the `hicolor/` renders MIT OR Apache-2.0; `ATTRIBUTION.md` carries a row per file. The ArtCraft wordmark and mark are used nowhere. |
+| **D10** | Ask upstream? | open one issue · just read releases | **Just read releases.** No upstream issue is opened from this repository. |
+| **D11** | GitHub token | optional, off by default · required · never | **No token, ever** — not even as an optional setting. A test asserts the settings file has no token field. |
+| **D12** | A `-web` build | no · yes | **No web build.** `ROADMAP.md` says so under "Not planned", so the absence reads as deliberate. |
 
 ---
 
-## 5. Open questions
+### What changed from the recommendations
 
-1. **The name** (D8). "CraftCenter" is the working name; the trademark terms rule out anything built
-   on "ArtCraft".
-2. **Upstream contact** (D10). Opening an issue on their repository is a public act and needs a
-   decision before it happens.
-3. **`artcraft`** (D3): listed-but-not-installable, or full support behind an explicit
-   "allow unverified downloads" switch?
-4. **Self-update** (D6): notify-only in v1?
-5. **Windows** (D4): portable zip only, or also drive the per-machine `.msi` with its elevation
-   prompt?
+Two decisions went against the original recommendation, and both made the program harder rather
+than easier:
 
-Nothing else is needed to build v1: no accounts, no secrets, no credentials. Signing CraftCenter's
-own releases later would need an Apple Developer ID and a Windows code-signing certificate; until
-then its artifacts are unsigned and say so, exactly as the upstream pipeline tolerates.
+- **D3** recommended listing `artcraft` with a link but no install path. The ruling removes it from
+  the catalogue entirely: CraftCenter is for the creative-suite apps, and a row that cannot be
+  installed is a row that invites the question.
+- **D6** recommended notifying about a CraftCenter update rather than applying it. The ruling is to
+  **self-replace in v1**, on the reasoning that this is an installer for a creative suite and so
+  runs on machines with a display, where a person can try the swap. The implementation does the
+  safe thing on each platform — download, verify, then two renames: the running image is moved
+  aside and the new one takes its place, which Unix allows because the kernel holds the inode and
+  Windows allows because it refuses to *delete* a running image but not to *rename* one. The
+  moved-aside file is deleted immediately where that is permitted, and at the next start where it
+  is not. `README.md` says plainly that no person has yet run that swap on a live program.
+
+`D7` was left open for judgement within three constraints: anyone may use it, the authors take no
+responsibility, and it may not be sold. **PolyForm Noncommercial 1.0.0** meets all three as
+written — any noncommercial purpose is permitted, including by companies, charities, schools and
+public bodies; the No Liability clause disclaims warranty and liability; commercial use is not
+granted. A Creative Commons NonCommercial licence was considered and rejected: those are written
+for content, not software, and say nothing useful about source, object form or patents. The
+upstream's own licences are unaffected either way, because this program vendors none of their
+code — the reasoning is set out in `ATTRIBUTION.md`.
+
+## 5. What is still open
+
+The questions this document once carried have all been answered, and §4 records how. What remains
+open is not a decision but a gap in evidence, and it is worth naming plainly:
+
+1. **No person has opened the window yet.** The shell compiles and its logic is unit-tested on
+   Linux, macOS and Windows in CI, but a `cargo test` cannot tell you whether a title bar drags.
+   The app-drawn chrome is the most likely thing to need a fix, which is why
+   `CRAFTCENTER_OS_DECORATIONS=1` exists. `README.md` keeps the list of what has and has not been
+   run by a person; keep it honest as that changes.
+2. **The macOS and Windows install paths have been written, not exercised.** Mounting a DMG and
+   copying a bundle, unpacking a portable zip and writing a Start Menu shortcut — both are
+   straightforward, and both are the kind of straightforward that has a surprise in it.
+3. **Replacing a genuinely running program has not been done.** The two-rename swap is covered by
+   tests against ordinary files on disk, which is not the same as doing it to a live image,
+   especially on Windows.
+4. **Signing CraftCenter's own releases** needs an Apple Developer ID and a Windows code-signing
+   certificate. Until there are any, its artifacts are unsigned and the workflow says so — the same
+   way the upstream's pipeline tolerates a missing secret rather than failing on it.
+
+Nothing on that list blocks anyone from using the program; each is a claim this project declines to
+make until someone has checked it.

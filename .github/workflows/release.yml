@@ -1,0 +1,246 @@
+name: Release
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Version to release (e.g. 1.2.3). Leave empty to use
+          [workspace.package] version from the root Cargo.toml.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a release mid-flight: a cancelled notarization or a
+  # half-uploaded artifact set is worse than a slow release.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      date: ${{ steps.resolve.outputs.date }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="$(awk '
+              /^\[workspace\.package\]/ { in_section = 1; next }
+              /^\[/ { in_section = 0 }
+              in_section && /^version[[:space:]]*=/ {
+                if (match($0, /"[^"]*"/)) {
+                  print substr($0, RSTART + 1, RLENGTH - 2)
+                  exit
+                }
+              }
+            ' Cargo.toml)"
+          fi
+
+          if [ -z "$version" ]; then
+            echo "::error::could not resolve a version" >&2
+            exit 1
+          fi
+
+          # Plain semver, with an optional -prerelease tag; this is a
+          # release pipeline, not a general-purpose semver validator, so
+          # it is deliberately strict rather than trying to cover every
+          # corner of the spec (build metadata, etc).
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' does not look like a semver version" >&2
+            exit 1
+          fi
+
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+
+          {
+            echo "version=$version"
+            echo "date=$(date -u +%Y-%m-%d)"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 is deliberately the oldest Ubuntu GitHub still
+          # hosts: building there means the resulting binaries only need
+          # glibc 2.35, which is older (and so more widely compatible)
+          # than what ubuntu-latest would link against.
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      CRAFTCENTER_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev \
+            libxi-dev libgl1-mesa-dev \
+            desktop-file-utils appstream zsync
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Package
+        run: bash packaging/linux/package.sh
+
+      - name: Sanity-check the AppImage
+        run: |
+          set -euo pipefail
+          appimage="dist/release/craftcenter-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}.AppImage"
+          chmod +x "$appimage"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version
+          "$appimage" --appimage-updateinformation | grep -F 'gh-releases-zsync|'
+          test -s "$appimage.zsync"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-14
+    env:
+      CRAFTCENTER_VERSION: ${{ needs.version.outputs.version }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Package
+        run: bash packaging/macos/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/release/*
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      CRAFTCENTER_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Package
+        shell: pwsh
+        run: ./packaging/windows/package.ps1 -Arch x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: dist/release/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to touch an already-published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          status="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || echo 'missing')"
+          if [ "$status" = "false" ]; then
+            echo "::error::$TAG is already published. Bump [workspace.package] version instead of re-running this release." >&2
+            exit 1
+          fi
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: collected
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: collected
+        run: sha256sum -- * | tee SHA256SUMS.txt
+
+      - name: Write job summary
+        run: |
+          {
+            echo "## CraftCenter v${{ needs.version.outputs.version }}"
+            echo
+            echo '```'
+            cat collected/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.version.outputs.version }}
+          TITLE: CraftCenter v${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          extra_flags=()
+          if [ "$PRERELEASE" = "true" ]; then
+            extra_flags+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --draft "${extra_flags[@]}"
+          else
+            gh release create "$TAG" --title "$TITLE" --draft --target "$GITHUB_SHA" "${extra_flags[@]}"
+          fi
+
+          # --clobber lets re-running this job after fixing a failed
+          # platform leg replace that platform's assets without first
+          # having to delete them by hand.
+          gh release upload "$TAG" collected/* --clobber

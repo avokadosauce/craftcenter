@@ -1,0 +1,15 @@
+6687380030f8a8f430522469f97e1cde8ffaadf972620d2aed3755995ff3171b  designcraft-0.2.1-linux-aarch64.AppImage
+592d428cdecda186ab134cd8c81785084776037a83034438e77e21f14fda571d  designcraft-0.2.1-linux-aarch64.deb
+abe886ab44f968ffe6df47ad6235bf0be4e390147d2487ecdffcfb3b5e27c534  designcraft-0.2.1-linux-aarch64.rpm
+a3131f308ba4c66948707d2e5caace91ca9f3df78cbd7a07e30ae6d202145943  designcraft-0.2.1-linux-aarch64.tar.gz
+78141184d4ebc0183fe9c2609611d2a33e67668738548cc022b6778398ec8340  designcraft-0.2.1-linux-x86_64.AppImage
+9750c0ac3b95205b9a0a631eb9d351731296d693517b87db9651ce41a85cee04  designcraft-0.2.1-linux-x86_64.deb
+a26857e40da6dc0e78674d4ad44a15ec3a548f69389d3c91e50e338a8a1a5581  designcraft-0.2.1-linux-x86_64.rpm
+0a66a34192203d5f53d6a38e95c9f556396a12edc1b73f9e66c40b371e100970  designcraft-0.2.1-linux-x86_64.tar.gz
+0fc01e43e20b963d0493b0978fedc0dc42084c00bd47b37e4b7b67e983789612  designcraft-0.2.1-macos-universal.dmg
+307b1281acc7cf8a9328768cef18665b7f96067eea4984e871e061f97ea3ec3f  designcraft-0.2.1-windows-x64-portable.zip
+d320310c33b9e887ab5a68b76b67e63e426e909ab92e3e3f39d06c2d49697d2c  designcraft-0.2.1-windows-x64.msi
+23f546f1ef78833ada6c416009462ccdaa32ad75f2810e39f23b8991fcdc52ce  designcraft-0.2.1-windows-x86-portable.zip
+b7612a134b28a9a7efce7b776bead75e0a17c8fa122efe57b7f7a24a3eb2ae22  designcraft-0.2.1-windows-x86.msi
+e11386860ee88da34a59c79dfedeba2a00166c368d7e99650d97a8db89702aaf  designcraft-cli-0.2.1-macos-universal.zip
+762df9c5fff781dfb221c0996d304325bf893a0bacd0da0d5b1b70597e3cdc62  designcraft-web-0.2.1.zip

@@ -1,0 +1,16 @@
+0b003c48ee58ec0c0fb7a1f8d937de0e9c51dfdad0f3ad65c1b3a450d04eb72f  printcraft-0.2.1-freebsd-x86_64.tar.gz
+12024ceda6f7835e66972b3ef8a41eda650d57b23c9b96e5a65f2533ce8ff608  printcraft-0.2.1-linux-aarch64.AppImage
+ccf61177d2cd866c23314391436fcdbaf5203c85b945344a53adcf520556fbfb  printcraft-0.2.1-linux-aarch64.deb
+2cc5562af78c70b788fe26f43fadd1ec542a1f42ad423679951f521e2b1a11fe  printcraft-0.2.1-linux-aarch64.rpm
+c7ae5dac00b3c11bea4e7cc502878a1b6ab520362d09885293e48417452e5dc0  printcraft-0.2.1-linux-aarch64.tar.gz
+401735c646bc5884cf1ff799d46913bce7dc3d29d06ff5a2902697e65465f584  printcraft-0.2.1-linux-x86_64.AppImage
+74a45574f0f5faa552a57618c99ba51ee818adc65ed32bb429b195ec260cd1e6  printcraft-0.2.1-linux-x86_64.deb
+6f0b828ecf1afba002752cd4b73409b51a9cce2083769c62de5cf22229222bc9  printcraft-0.2.1-linux-x86_64.rpm
+73b2977330d73716971237f68f89cba6ad52cbfb563ad0ab6d9ad18f44d45192  printcraft-0.2.1-linux-x86_64.tar.gz
+5b743dcdf1abbb12432b82f11dabc929bf8aa83866bfd3d110ca05428088dd10  printcraft-0.2.1-macos-universal.dmg
+7ed1aa951eb336637763e3bd1f15b8fba483a9ca58d7b2b2d2ee2ab69be52872  printcraft-0.2.1-windows-x64-portable.zip
+35408d34f23fbb1224251a95d04a4a7c3472f24faa6609ba8c953f4d46fcc6cf  printcraft-0.2.1-windows-x64.msi
+b5eed12ce10aabe537eafb802727db027fa6e161f76c4ef448781791343ccde5  printcraft-0.2.1-windows-x86-portable.zip
+e1b1f96ffb45fb64e91aaac37cce83cc9361edfa7b34eaa953973127329415ce  printcraft-0.2.1-windows-x86.msi
+bda65829033916c5de5a7ddc0763437f8db2e8792ee43c8dc2676434acb3d495  printcraft-cli-0.2.1-macos-universal.zip
+47cda2075ee79dbe8729b630f3bc559e6dd1bb37834ba5c592bcce50309a0a7f  printcraft-web-0.2.1.zip

@@ -1,0 +1,25 @@
+[package]
+name = "craftcenter"
+description = "CraftCenter: install and update the Crafting Apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+default-run = "craftcenter"
+
+[[bin]]
+name = "craftcenter"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcenter-core = { workspace = true }
+craftcenter-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
+egui = { workspace = true }
+env_logger = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }

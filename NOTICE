@@ -1,0 +1,27 @@
+CraftCenter
+Copyright (c) 2026 the CraftCenter contributors.
+
+Licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE.md). Any noncommercial purpose is
+permitted; selling the software, or the code it is built from, is not. The software comes as is,
+without any warranty or condition.
+
+CraftCenter is unofficial. It is not made, sponsored, endorsed or certified by the ArtCraft team,
+and it carries none of their code.
+
+Third-party material
+
+This product bundles third-party material under its own licenses. The per-file list (author,
+source, license) is in ATTRIBUTION.md.
+
+Inter (assets/fonts/Inter-*.ttf) - SIL Open Font License 1.1. See assets/fonts/OFL-Inter.txt.
+JetBrains Mono (assets/fonts/JetBrainsMono-Regular.ttf) - SIL Open Font License 1.1.
+  See assets/fonts/OFL-JetBrainsMono.txt.
+The Crafting Apps' own icons (assets/app-icon/*craft-64.png) - MIT OR Apache-2.0, as granted by
+  each app's own repository. See ATTRIBUTION.md for the per-file source.
+
+The ArtCraft name, wordmark and mark are trademarks of the ArtCraft team. They are not open source
+and they are not used in this project.
+
+Rust dependencies (egui, eframe, ureq, rustls, sha2, serde, zip, flate2, tar and their transitive
+dependencies) are fetched through crates.io under their own permissive licenses, mostly MIT and/or
+Apache-2.0.

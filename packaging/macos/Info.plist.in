@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for CraftCenter.app/Contents/Info.plist. packaging/macos/package.sh
+  substitutes @VERSION@ (the workspace version) and @BUILD@ (the build's
+  git commit) before this is written into the bundle.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.avokadosauce.craftcenter</string>
+	<key>CFBundleName</key>
+	<string>CraftCenter</string>
+	<key>CFBundleDisplayName</key>
+	<string>CraftCenter</string>
+	<key>CFBundleExecutable</key>
+	<string>craftcenter</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleIconFile</key>
+	<string>craftcenter</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!--
+	  Not an Apple-defined key; recorded here purely so a built bundle can
+	  be traced back to the exact commit that produced it, the same way
+	  CRAFTCENTER_BUILD_SHA is threaded through the other platforms.
+	-->
+	<key>CraftCenterBuildCommit</key>
+	<string>@BUILD@</string>
+</dict>
+</plist>

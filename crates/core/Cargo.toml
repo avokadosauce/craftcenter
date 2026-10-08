@@ -1,0 +1,24 @@
+[package]
+name = "craftcenter-core"
+description = "The CraftCenter core: catalogue, release checks, install state, and the actions over them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcenter-catalogue = { workspace = true }
+craftcenter-install = { workspace = true }
+craftcenter-releases = { workspace = true }
+craftcenter-select = { workspace = true }
+craftcenter-verify = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

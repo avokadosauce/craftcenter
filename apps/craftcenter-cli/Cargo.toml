@@ -1,0 +1,20 @@
+[package]
+name = "craftcenter-cli"
+description = "CraftCenter on the command line: list, check, install, update, launch, remove, verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+default-run = "craftcenter-cli"
+
+[[bin]]
+name = "craftcenter-cli"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcenter-core = { workspace = true }
+craftcenter-select = { workspace = true }

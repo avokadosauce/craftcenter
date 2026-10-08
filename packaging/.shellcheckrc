@@ -1,0 +1,14 @@
+# shellcheck config for everything under packaging/.
+#
+# external-sources lets shellcheck follow the `. "$(dirname "$0")/../env.sh"`
+# pattern every packaging/<os>/*.sh script uses: without it, shellcheck
+# refuses to look past a dynamically-built source path and each script
+# would need its own `# shellcheck source=...` comment doing all the work
+# (which we also add, belt and braces) instead of this resolving it
+# automatically for any script under this tree.
+external-sources=true
+
+# Dash/sh is deliberate for AppRun (it is executed by whatever /bin/sh an
+# AppImage runtime provides, which is not guaranteed to be bash), while the
+# packaging scripts proper are bash. Each file says so itself via a
+# `# shellcheck shell=...` directive, so no blanket shell= is set here.

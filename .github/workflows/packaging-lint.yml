@@ -1,0 +1,76 @@
+name: Packaging lint
+
+# Lints the packaging/ scripts and manifests themselves — the things in
+# this repo that are not Rust, and so are not covered by CI's cargo steps.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: packaging-lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: '1.7.7'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf actionlint.tar.gz actionlint
+          install -m 0755 actionlint /usr/local/bin/actionlint
+          rm -f actionlint actionlint.tar.gz
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Install desktop-file-utils and appstream
+        run: sudo apt-get install -y --no-install-recommends desktop-file-utils appstream
+
+      - name: actionlint
+        run: actionlint
+
+      - name: shellcheck
+        run: shellcheck packaging/*.sh packaging/*/*.sh packaging/linux/AppRun
+
+      - name: AppRun integration test
+        run: bash packaging/linux/apprun-test.sh
+
+      - name: Parse-check the Windows packaging script
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "packaging/windows/package.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
+      - name: Render the AppStream metadata for validation
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/craftcenter-packaging-lint"
+          sed \
+            -e 's/@VERSION@/0.0.0-lint/g' \
+            -e 's/@DATE@/2000-01-01/g' \
+            packaging/linux/io.github.avokadosauce.craftcenter.metainfo.xml.in \
+            > "$RUNNER_TEMP/craftcenter-packaging-lint/io.github.avokadosauce.craftcenter.metainfo.xml"
+
+      - name: desktop-file-validate
+        run: desktop-file-validate packaging/linux/io.github.avokadosauce.craftcenter.desktop
+
+      - name: appstreamcli validate
+        run: appstreamcli validate --no-net "$RUNNER_TEMP/craftcenter-packaging-lint/io.github.avokadosauce.craftcenter.metainfo.xml"
+
+      - name: Clean up rendered metadata
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/craftcenter-packaging-lint"

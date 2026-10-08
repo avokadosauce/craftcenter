@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+description = "Repository tasks: layering, catalogue checks, fixture recording"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcenter-catalogue = { workspace = true }
+craftcenter-releases = { workspace = true }
+craftcenter-select = { workspace = true }
+craftcenter-verify = { workspace = true }
+toml = { workspace = true }

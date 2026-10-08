@@ -1,0 +1,173 @@
+# The CraftCenter catalogue: every app CraftCenter can install, one table per app.
+#
+# Adding a Crafting App is one `[[app]]` row and nothing else — no code change. Fields:
+#
+#   slug         machine name; the CLI argument, the install directory, the state key
+#   name         display name, in the upstream's {Function}Craft spelling
+#   tagline      one line, in the publisher's own words where they have published one
+#   repo         "<owner>/<repo>" on github.com; the only host CraftCenter talks to
+#   app_id       the upstream's reverse-DNS id, used for the Linux .desktop file name
+#   binary       the executable inside the release asset
+#   cli          the optional headless binary, when the release ships one
+#   asset_stems  the filename stems to look for, newest first. NOT always the repo name:
+#                every published pdfcraft release is named printcraft-*, while the
+#                packaging scripts on its main branch already emit pdfcraft-*. Selection
+#                matches the release's real asset list, so both can be listed safely.
+#   icon         path under assets/app-icon/, copied from the app's own repo (its
+#                assets/app-icon/LICENSE.txt licenses it MIT OR Apache-2.0)
+#   kind         "app" for an installable app, "self" for CraftCenter itself
+#
+# The engine, storytold/artcraft, is deliberately absent: it is not one of the creative
+# suite apps, its releases have a different shape, and it publishes no SHA256SUMS.txt.
+
+schema = 1
+
+[[app]]
+slug = "craftcenter"
+name = "CraftCenter"
+tagline = "This installer"
+repo = "avokadosauce/craftcenter"
+app_id = "io.github.avokadosauce.craftcenter"
+binary = "craftcenter"
+cli = "craftcenter-cli"
+asset_stems = ["craftcenter"]
+kind = "self"
+
+[[app]]
+slug = "photocraft"
+name = "PhotoCraft"
+tagline = "Image editing: layers, masks, type and real PSD files"
+repo = "storytold/photocraft"
+app_id = "ai.storyteller.photocraft"
+binary = "photocraft"
+cli = "photocraft-cli"
+asset_stems = ["photocraft"]
+icon = "photocraft-64.png"
+site = "https://getartcraft.com/apps/photocraft"
+
+[[app]]
+slug = "vectorcraft"
+name = "VectorCraft"
+tagline = "Vector illustration"
+repo = "storytold/vectorcraft"
+app_id = "ai.storyteller.vectorcraft"
+binary = "vectorcraft"
+cli = "vectorcraft-cli"
+asset_stems = ["vectorcraft"]
+icon = "vectorcraft-64.png"
+site = "https://getartcraft.com/apps/vectorcraft"
+
+[[app]]
+slug = "filmcraft"
+name = "FilmCraft"
+tagline = "Video editing, color and sound"
+repo = "storytold/filmcraft"
+app_id = "ai.storyteller.filmcraft"
+binary = "filmcraft"
+cli = "filmcraft-cli"
+asset_stems = ["filmcraft"]
+icon = "filmcraft-64.png"
+site = "https://getartcraft.com/apps/filmcraft"
+
+[[app]]
+slug = "lightcraft"
+name = "LightCraft"
+tagline = "Photo library and raw development"
+repo = "storytold/lightcraft"
+app_id = "ai.storyteller.lightcraft"
+binary = "lightcraft"
+cli = "lightcraft-cli"
+asset_stems = ["lightcraft"]
+icon = "lightcraft-64.png"
+site = "https://getartcraft.com/apps/lightcraft"
+
+[[app]]
+slug = "pdfcraft"
+name = "PdfCraft"
+tagline = "Reading, organizing and protecting PDFs"
+repo = "storytold/pdfcraft"
+app_id = "ai.storyteller.pdfcraft"
+binary = "pdfcraft"
+cli = "pdfcraft-cli"
+asset_stems = ["pdfcraft", "printcraft"]
+icon = "pdfcraft-64.png"
+site = "https://getartcraft.com/apps/pdfcraft"
+
+[[app]]
+slug = "effectcraft"
+name = "EffectCraft"
+tagline = "Motion graphics and visual effects"
+repo = "storytold/effectcraft"
+app_id = "ai.storyteller.effectcraft"
+binary = "effectcraft"
+cli = "effectcraft-cli"
+asset_stems = ["effectcraft"]
+icon = "effectcraft-64.png"
+site = "https://getartcraft.com/apps/effectcraft"
+
+[[app]]
+slug = "designcraft"
+name = "DesignCraft"
+tagline = "Page layout and publishing"
+repo = "storytold/designcraft"
+app_id = "ai.storyteller.designcraft"
+binary = "designcraft"
+cli = "designcraft-cli"
+asset_stems = ["designcraft"]
+icon = "designcraft-64.png"
+site = "https://getartcraft.com/apps/designcraft"
+
+[[app]]
+slug = "wordcraft"
+name = "WordCraft"
+tagline = "Word processing and long documents"
+repo = "storytold/wordcraft"
+app_id = "ai.storyteller.wordcraft"
+binary = "wordcraft"
+cli = "wordcraft-cli"
+asset_stems = ["wordcraft"]
+icon = "wordcraft-64.png"
+
+[[app]]
+slug = "cadcraft"
+name = "CADCraft"
+tagline = "Computer-aided design and drafting"
+repo = "storytold/cadcraft"
+app_id = "ai.storyteller.cadcraft"
+binary = "cadcraft"
+cli = "cadcraft-cli"
+asset_stems = ["cadcraft"]
+icon = "cadcraft-64.png"
+
+[[app]]
+slug = "gridcraft"
+name = "GridCraft"
+tagline = "Spreadsheets and calculation"
+repo = "storytold/gridcraft"
+app_id = "ai.storyteller.gridcraft"
+binary = "gridcraft"
+cli = "gridcraft-cli"
+asset_stems = ["gridcraft"]
+icon = "gridcraft-64.png"
+
+[[app]]
+slug = "deckcraft"
+name = "DeckCraft"
+tagline = "Presentations and slide shows"
+repo = "storytold/deckcraft"
+app_id = "ai.storyteller.deckcraft"
+binary = "deckcraft"
+cli = "deckcraft-cli"
+asset_stems = ["deckcraft"]
+icon = "deckcraft-64.png"
+
+[[app]]
+slug = "soundcraft"
+name = "SoundCraft"
+tagline = "Audio production and mixing"
+repo = "storytold/soundcraft"
+app_id = "ai.storyteller.soundcraft"
+binary = "soundcraft"
+cli = "soundcraft-cli"
+asset_stems = ["soundcraft"]
+icon = "soundcraft-64.png"

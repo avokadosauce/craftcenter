@@ -1,0 +1,17 @@
+ce5f77be74afc8988449969d40c32e4ce680f1d214f7dbac836afa790fc2bb6a  deckcraft-0.1.0-freebsd-x86_64.tar.gz
+62f77a808b8782a731080aa4c96690cbcdec3c45d3ba8e78bfa43bd72e4abfbf  deckcraft-0.1.0-linux-aarch64.AppImage
+fe604bae077811332782bf56e3655480c714828e05eafae5f79ab456cd9bf84b  deckcraft-0.1.0-linux-aarch64.deb
+53d84e3faa60ccf511ef01f29aef5786714a8247a7613c7cf2845269b0be792c  deckcraft-0.1.0-linux-aarch64.rpm
+0f3ec1e0161cb70b0a12053fad40630784ec55711bf21a09060eadfd2752676d  deckcraft-0.1.0-linux-aarch64.tar.gz
+b611d2ee6fb4ecc2034b1c76540e6d02de15c6ea83af9d1a0dd4ed6ceb612ebf  deckcraft-0.1.0-linux-x86_64.AppImage
+a280ccc1538297c9afb8ef01f5afe77d87eefd39cc86294aa166555df5a8c2ca  deckcraft-0.1.0-linux-x86_64.deb
+ccb2a81d07338096bd7f768908d3be7693ec577c8dfa0d7df17f1c3cbb6c3271  deckcraft-0.1.0-linux-x86_64.flatpak
+1704960c36fe4c80b32fb2764be71f42b436d41bcfc3c0c0f4ad614748bc390c  deckcraft-0.1.0-linux-x86_64.rpm
+2f5a4eb90194324d6c175500530ec80b8f4b2408b1b96ece7f853ea31301f628  deckcraft-0.1.0-linux-x86_64.tar.gz
+f56a881400423297acef32c6d8d21785cfdadfcd6a439544d0e3ab0ee68b2625  deckcraft-0.1.0-macos-universal.dmg
+8f45a80c39a531c8095803b7f5ac310bd801c9f70e9971287daaa51fe4d2e3e7  deckcraft-0.1.0-windows-x64-portable.zip
+49948f26cc2708513843e488088ae6f9f2610540557dc42dcf3728117791b35d  deckcraft-0.1.0-windows-x64.msi
+f38e0fe0ebb84072c8cf3710e77ea55220c1d878292f3e1558f063ab7f85ed1f  deckcraft-0.1.0-windows-x86-portable.zip
+abc16ad1ce3083fd60f83ebe31ce7319f4589a4d7bfd1a4ebc68b4d87226b3a2  deckcraft-0.1.0-windows-x86.msi
+1d4df5c72cb05bd57df463457b013099aeb66ffce824a82a9e8a46a97ce9082f  deckcraft-cli-0.1.0-macos-universal.zip
+e66711e0b85fe739590a89916a67ae95383a518c0754ab66cc05599e80770373  deckcraft-web-0.1.0.zip

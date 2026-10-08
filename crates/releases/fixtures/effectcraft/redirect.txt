@@ -1,0 +1,1 @@
+https://github.com/storytold/effectcraft/releases/download/v0.4.0/SHA256SUMS.txt

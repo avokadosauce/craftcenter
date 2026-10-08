@@ -1,0 +1,16 @@
+[package]
+name = "craftcenter-select"
+description = "Choosing which release asset to install, per platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcenter-catalogue = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

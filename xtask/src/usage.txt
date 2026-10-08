@@ -1,0 +1,12 @@
+cargo xtask <task>
+
+TASKS
+    layers                       check that no crate depends on a layer above it, and that
+                                 nothing below the shell depends on the UI toolkit
+    catalogue                    list the catalogue
+    catalogue --check-offline    resolve every (app x platform) against the recorded release
+                                 manifests in crates/releases/fixtures (no network; run in CI)
+    catalogue --check            look up every app's current release and report drift from what
+                                 the catalogue expects (needs the network; not run in CI, because
+                                 CI must not fail when an upstream project ships a release)
+    help                         this text

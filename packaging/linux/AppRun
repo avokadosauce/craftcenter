@@ -1,0 +1,120 @@
+#!/bin/sh
+# shellcheck shell=sh
+#
+# AppRun is the entry point AppImage's runtime execs after mounting the
+# image. It is deliberately plain POSIX sh (no bashisms) because the only
+# promise an AppImage makes about its runtime environment is "some /bin/sh
+# exists".
+#
+# Besides launching the real binary, this script makes a best-effort
+# attempt to register a desktop entry and icon for the running AppImage, so
+# that after a first launch the app shows up in application menus the way a
+# distro package would. Every step here is best-effort: if anything about
+# the integration fails or looks unsafe, we skip it silently (bar the
+# opt-out notice below) and launch the program regardless. A desktop
+# integration that could block the program from starting would be worse
+# than no integration at all.
+set -u
+
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+real_bin="$here/usr/bin/craftcenter"
+
+# Opt-out for anyone who does not want files written outside the AppImage
+# itself (read-only environments, sandboxes, people who just do not want it).
+if [ "${CRAFTCENTER_NO_DESKTOP_INTEGRATION:-}" = "1" ]; then
+	exec "$real_bin" "$@"
+fi
+
+# $APPIMAGE is set by the AppImage runtime to the absolute path of the
+# mounted image file itself (not the squashfs mountpoint). That is the path
+# we want in Exec=, since it is what the user would double-click again.
+appimage_path="${APPIMAGE:-}"
+
+install_desktop_integration() {
+	# Refuse paths that contain characters with special meaning inside a
+	# desktop entry's Exec= value or that would otherwise be unsafe to drop
+	# unquoted into a generated file. A path a user would realistically hit
+	# (containing a space) is fine; these are not.
+	case "$appimage_path" in
+	*'"'* | *'`'* | *'$'* | *'\'* | *'%'*)
+		return 1
+		;;
+	esac
+	# A literal newline cannot be matched with a case pattern built from
+	# command substitution (substitution strips trailing newlines, which
+	# would leave the pattern empty and match everything). Counting lines
+	# instead sidesteps that: a path with no embedded newline plus the one
+	# printf adds is exactly one line.
+	if [ "$(printf '%s\n' "$appimage_path" | wc -l)" -ne 1 ]; then
+		return 1
+	fi
+	[ -n "$appimage_path" ] || return 1
+
+	# Work out $XDG_DATA_HOME / $HOME without ever expanding one unset
+	# variable as the default for another: under `set -u` that would be a
+	# fatal "unbound variable" error instead of just an empty string, which
+	# is exactly the kind of failure this function must never cause.
+	if [ -n "${XDG_DATA_HOME:-}" ]; then
+		data_home="$XDG_DATA_HOME"
+	elif [ -n "${HOME:-}" ]; then
+		data_home="$HOME/.local/share"
+	else
+		return 1
+	fi
+
+	apps_dir="$data_home/applications"
+	desktop_dest="$apps_dir/io.github.avokadosauce.craftcenter.desktop"
+	desktop_src="$here/io.github.avokadosauce.craftcenter.desktop"
+	[ -f "$desktop_src" ] || return 1
+
+	mkdir -p "$apps_dir" 2>/dev/null || return 1
+
+	tmp_desktop="$desktop_dest.craftcenter-tmp.$$"
+	# Rewrite Exec= to point at this AppImage's absolute path, and drop
+	# TryExec= entirely: TryExec is meant to hold a bare command found on
+	# PATH, and the AppImage itself will generally not be on PATH.
+	sed \
+		-e "s|^Exec=.*|Exec=$appimage_path|" \
+		-e '/^TryExec=/d' \
+		"$desktop_src" >"$tmp_desktop" 2>/dev/null || {
+		rm -f "$tmp_desktop"
+		return 1
+	}
+
+	if [ -f "$desktop_dest" ] && cmp -s "$tmp_desktop" "$desktop_dest" 2>/dev/null; then
+		# Already installed and unchanged; nothing to do, and nothing to churn.
+		rm -f "$tmp_desktop"
+	else
+		mv -f "$tmp_desktop" "$desktop_dest" 2>/dev/null || rm -f "$tmp_desktop"
+	fi
+
+	# Icons: copy whatever hicolor sizes the AppImage carries under
+	# usr/share/icons/hicolor/, each straight to the matching path under
+	# the user's own hicolor theme tree.
+	icon_src_root="$here/usr/share/icons/hicolor"
+	if [ -d "$icon_src_root" ]; then
+		icon_dest_root="$data_home/icons/hicolor"
+		find "$icon_src_root" -type f -name 'io.github.avokadosauce.craftcenter.*' 2>/dev/null |
+			while IFS= read -r icon_src; do
+				rel="${icon_src#"$icon_src_root"/}"
+				icon_dest="$icon_dest_root/$rel"
+				mkdir -p "$(dirname "$icon_dest")" 2>/dev/null || continue
+				if [ -f "$icon_dest" ] && cmp -s "$icon_src" "$icon_dest" 2>/dev/null; then
+					continue
+				fi
+				cp "$icon_src" "$icon_dest" 2>/dev/null || true
+			done
+	fi
+
+	return 0
+}
+
+# Only even attempt this when $APPIMAGE looks like it was actually set by
+# the runtime (i.e. we are genuinely running from inside a mounted image).
+# A direct run of AppRun during development should not write to the real
+# user data directories.
+if [ -n "$appimage_path" ]; then
+	install_desktop_integration || true
+fi
+
+exec "$real_bin" "$@"

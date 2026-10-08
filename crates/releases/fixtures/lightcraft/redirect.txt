@@ -1,0 +1,1 @@
+https://github.com/storytold/lightcraft/releases/download/v0.2.1/SHA256SUMS.txt

@@ -1,0 +1,17 @@
+83b84bff635d54f7432d5b95ebdf17a62fc6e9e608a709383d54a615bf56116d  effectcraft-0.4.0-linux-aarch64.AppImage
+932f7185e10f598ecf252eee77b3c132fb6fd268aa6903cd2a2a0530cf7c291a  effectcraft-0.4.0-linux-aarch64.deb
+6016cec96d6b1361d5407b877c82366cda7e3ebddeedd435aa90e2e29ddc0379  effectcraft-0.4.0-linux-aarch64.rpm
+d6517a75715319191d7c5b7de3cc7e65f9166ca5dfaa8bdb455b1b5a98892663  effectcraft-0.4.0-linux-aarch64.tar.gz
+994c374c54e920a12ff20fbe443199acaf49c03b30380e7a5c17b60208743d71  effectcraft-0.4.0-linux-x86_64.AppImage
+05d0547b26a1548cc414afdb08f5cfc7480810dded56d80066dbf164a42ba688  effectcraft-0.4.0-linux-x86_64.deb
+5d78104047a135bcf5ee098fb80693ab16ed954ebfa2adfe3ea5a23678448a9d  effectcraft-0.4.0-linux-x86_64.rpm
+3b7b616ba837910e812e53cff1776c56159fe9644ef8dc47a45759bd7ab7679a  effectcraft-0.4.0-linux-x86_64.tar.gz
+276fa037741900809ad4c9ed82e70a02e810e4e92a5b20976fb2dac6d694e71a  effectcraft-0.4.0-macos-universal.dmg
+c8616ea63e9c2cd866f285f403a058b2817644101e5d3ddcc34da912e1761ca0  effectcraft-0.4.0-windows-arm64-portable.zip
+4d34a75f4115df110085e4086a748a1137e82e3489ffdb9f14bd87f301b0cbae  effectcraft-0.4.0-windows-arm64.msi
+b348bb3fd075e672393ca8e2757746ca4a05ff9001a014b8f56cc2d84cacd2f0  effectcraft-0.4.0-windows-x64-portable.zip
+58cc7e3a917ed4f3dec3b937aeb491df08ff9f4e95f25883114cbd75afac9532  effectcraft-0.4.0-windows-x64.msi
+0e786fa2b03ecb75fdcd979f3ffb766fa05a41e66acb4e377ca3683d118f583f  effectcraft-0.4.0-windows-x86-portable.zip
+23122ca0114e670426458d0b8f22b374a15fc307564a73b69c0c524cc5db2033  effectcraft-0.4.0-windows-x86.msi
+950abbb83800518281115ef05cebc50d63a28dbeec204951c77f16ec2109219f  effectcraft-cli-0.4.0-macos-universal.zip
+68f781094d119ab6428d0d4d50bd8718b8226916c8274345ac268562848ecccf  effectcraft-web-0.4.0.zip

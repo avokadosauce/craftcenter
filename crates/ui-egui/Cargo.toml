@@ -1,0 +1,18 @@
+[package]
+name = "craftcenter-ui-egui"
+description = "The CraftCenter desktop shell: theme tokens, widgets and the catalogue window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craftcenter-core = { workspace = true }
+craftcenter-select = { workspace = true }
+egui = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }

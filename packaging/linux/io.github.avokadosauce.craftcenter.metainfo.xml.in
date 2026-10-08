@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Template for the AppStream component metadata. packaging/linux/package.sh
+  substitutes @VERSION@ and @DATE@ before installing this as
+  usr/share/metainfo/io.github.avokadosauce.craftcenter.metainfo.xml.
+-->
+<component type="desktop-application">
+  <id>io.github.avokadosauce.craftcenter</id>
+  <name>CraftCenter</name>
+  <summary>Install and update the Crafting Apps</summary>
+  <!--
+    PolyForm Noncommercial 1.0.0 has no SPDX identifier, so AppStream's
+    project_license field (which expects an SPDX expression) cannot name it
+    directly. LicenseRef-proprietary with a URL is the documented escape
+    hatch for exactly this case: a real, readable licence that SPDX simply
+    has not catalogued.
+  -->
+  <project_license>LicenseRef-proprietary=https://github.com/avokadosauce/craftcenter/blob/main/LICENSE.md</project_license>
+  <metadata_license>CC0-1.0</metadata_license>
+  <description>
+    <p>
+      CraftCenter is a user-space installer and updater for the Crafting
+      Apps published at github.com/storytold. It finds the right release
+      asset for your platform, verifies it, and keeps installed apps up to
+      date, all without needing administrator privileges.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.avokadosauce.craftcenter.desktop</launchable>
+  <url type="homepage">https://github.com/avokadosauce/craftcenter</url>
+  <provides>
+    <binary>craftcenter</binary>
+  </provides>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

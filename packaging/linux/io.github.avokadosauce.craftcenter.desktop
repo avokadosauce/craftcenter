@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=CraftCenter
+GenericName=Application Installer
+Comment=Install and update the Crafting Apps
+Exec=craftcenter
+TryExec=craftcenter
+Icon=io.github.avokadosauce.craftcenter
+Terminal=false
+StartupNotify=true
+StartupWMClass=craftcenter
+Categories=Utility;PackageManager;
+Keywords=install;update;download;apps;
