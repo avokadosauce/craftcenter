@@ -14,6 +14,9 @@ pub mod theme;
 pub mod titlebar;
 pub mod widgets;
 
+#[cfg(test)]
+mod frame_tests;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -16,3 +16,9 @@ craftcenter-select = { workspace = true }
 egui = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+# The frame test drives the whole program against the recorded release fixtures, and rewrites
+# one line of a recorded asset list to the digest of the bytes it serves instead.
+craftcenter-verify = { workspace = true }
+tempfile = { workspace = true }
