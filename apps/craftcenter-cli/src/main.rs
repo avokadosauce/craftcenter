@@ -26,7 +26,8 @@ COMMANDS
     update [app]         update one app, or every app that has an update
     launch <app>         start an installed app
     remove <app>         uninstall an app
-    verify <app>         check every installed file against what was recorded at install time
+    verify [app]         check every installed file against what was recorded at install time
+                         (every installed app when none is named)
     config               show the current settings
     config install-dir <path>     choose where new installs go
     config install-dir --default  go back to the per-user default
@@ -165,12 +166,7 @@ fn run() -> Result<ExitCode, String> {
             println!("removed {slug}");
             Ok(ExitCode::SUCCESS)
         }
-        "verify" => {
-            let slug = need_app(args.app)?;
-            let report = center.verify(&slug).map_err(|e| e.to_string())?;
-            print_verification(&slug, &report);
-            Ok(exit_code_for(&report))
-        }
+        "verify" => cmd_verify(&center, args.app.as_deref()),
         "config" => cmd_config(&mut center, args.app.as_deref(), args.value.as_deref(), args.default),
         "move" => cmd_move(&center, args.app.as_deref()),
         "self-update" => cmd_self_update(&center),
@@ -186,6 +182,37 @@ fn run() -> Result<ExitCode, String> {
     }
 }
 
+/// `verify <app>`, or every installed app when none is named.
+fn cmd_verify(center: &Center, slug: Option<&str>) -> Result<ExitCode, String> {
+    if let Some(slug) = slug {
+        let report = center.verify(slug).map_err(|e| e.to_string())?;
+        print_verification(slug, &report);
+        return Ok(exit_code_for(&report));
+    }
+
+    let installed: Vec<Row> = center.rows().into_iter().filter(|row| row.installed.is_some()).collect();
+    if installed.is_empty() {
+        println!("nothing is installed, so there is nothing to verify");
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The worst answer of the lot is the one the exit code carries: a run that found a changed
+    // file must not report success because the other eleven apps were sound.
+    let mut worst = 0;
+    for row in installed {
+        match center.verify(&row.app.slug) {
+            Ok(report) => {
+                print_verification(&row.app.slug, &report);
+                worst = worst.max(severity(report.level()));
+            }
+            Err(error) => {
+                eprintln!("{}: {error}", row.app.slug);
+                worst = worst.max(severity(Level::Incomplete));
+            }
+        }
+    }
+    Ok(code_for(worst))
+}
+
 /// The verdict, and then every path it rests on.
 ///
 /// The lists are the useful part: "something has changed" is only worth printing if it says
@@ -199,14 +226,28 @@ fn print_verification(slug: &str, report: &Verification) {
     }
 }
 
+/// How bad an answer is, so that a run over every installed app can carry the worst of them.
+fn severity(level: Level) -> u8 {
+    match level {
+        Level::Ok => 0,
+        Level::NotVerifiable => 1,
+        Level::Incomplete => 2,
+        Level::Modified => 3,
+    }
+}
+
 /// Three answers, not two. A script asking whether an app is intact must not read "I cannot
 /// tell" as a yes, so "not verifiable" gets a code of its own.
-fn exit_code_for(report: &Verification) -> ExitCode {
-    match report.level() {
-        Level::Ok => ExitCode::SUCCESS,
-        Level::Modified | Level::Incomplete => ExitCode::FAILURE,
-        Level::NotVerifiable => ExitCode::from(2),
+fn code_for(severity: u8) -> ExitCode {
+    match severity {
+        0 => ExitCode::SUCCESS,
+        1 => ExitCode::from(2),
+        _ => ExitCode::FAILURE,
     }
+}
+
+fn exit_code_for(report: &Verification) -> ExitCode {
+    code_for(severity(report.level()))
 }
 
 fn need_app(app: Option<String>) -> Result<String, String> {
@@ -510,6 +551,13 @@ mod tests {
         assert_eq!(format!("{:?}", exit_code_for(&changed)), format!("{:?}", ExitCode::FAILURE));
         assert_eq!(format!("{:?}", exit_code_for(&gone)), format!("{:?}", ExitCode::FAILURE));
         assert_eq!(format!("{:?}", exit_code_for(&unknown)), format!("{:?}", ExitCode::from(2)));
+
+        // Over several apps the worst answer is the one that is reported, and "cannot tell" does
+        // not drown out "something changed".
+        let worst = severity(Level::Ok).max(severity(Level::NotVerifiable)).max(severity(Level::Modified));
+        assert_eq!(format!("{:?}", code_for(worst)), format!("{:?}", ExitCode::FAILURE));
+        let quiet = severity(Level::Ok).max(severity(Level::NotVerifiable));
+        assert_eq!(format!("{:?}", code_for(quiet)), format!("{:?}", ExitCode::from(2)));
     }
 
     #[test]

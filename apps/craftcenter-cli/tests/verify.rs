@@ -90,6 +90,30 @@ fn nothing_to_check_against_exits_two() {
     assert!(text.contains("reinstall"), "it says what to do about it: {text}");
 }
 
+/// With no app named, every installed app is checked and the worst answer is the one the exit
+/// code carries.
+#[test]
+fn verify_with_no_app_named_checks_everything_installed() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = pretend_photocraft_is_installed(root.path());
+
+    let (code, text) = cli(root.path(), &["verify"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("photocraft:"), "{text}");
+
+    std::fs::write(dir.join("ai.storyteller.photocraft.AppImage"), "the bpp").expect("tamper");
+    let (code, text) = cli(root.path(), &["verify"]);
+    assert_eq!(code, Some(1), "{text}");
+}
+
+#[test]
+fn there_is_nothing_to_verify_when_nothing_is_installed() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (code, text) = cli(root.path(), &["verify"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("nothing is installed"), "{text}");
+}
+
 #[test]
 fn verifying_something_that_is_not_installed_says_so() {
     let root = tempfile::tempdir().expect("temp dir");

@@ -199,6 +199,9 @@ photocraft: 1 file of 412 changed since it was installed
   changed  Contents/MacOS/PhotoCraft
 ```
 
+`verify` with no app named checks every installed app and carries the worst answer out as its exit
+code.
+
 `list`, `check`, `install`, `update`, `launch`, `remove`, `verify`, `self-update`, `paths`.
 `--json` for `list`, `--force` to ignore the cached check, `--platform windows-arm64` to ask what
 *would* be installed somewhere else.
