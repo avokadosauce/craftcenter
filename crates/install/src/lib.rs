@@ -973,12 +973,18 @@ mod tests {
 
     #[test]
     fn a_recorded_path_follows_the_app_to_its_new_home() {
-        let from = Path::new("/one/apps/photocraft");
-        let to = Path::new("/two/photocraft");
-        assert_eq!(repoint("/one/apps/photocraft/0.3.0", from, to), "/two/photocraft/0.3.0");
-        assert_eq!(repoint("/one/apps/photocraft", from, to), "/two/photocraft");
+        // Built with `join` rather than written out, because the separator differs by platform
+        // and what is being tested is the prefix swap, not how a path is spelled.
+        let from = Path::new("one").join("apps").join("photocraft");
+        let to = Path::new("two").join("photocraft");
+        let inside = from.join("0.3.0");
+        let elsewhere = Path::new("home").join("bin").join("photocraft");
+
+        assert_eq!(repoint(&inside.display().to_string(), &from, &to), to.join("0.3.0").display().to_string());
+        // The root of the tree itself, with no trailing separator left behind.
+        assert_eq!(repoint(&from.display().to_string(), &from, &to), to.display().to_string());
         // A launcher in the user's bin is not inside the tree and must not be rewritten.
-        assert_eq!(repoint("/home/example/.local/bin/photocraft", from, to), "/home/example/.local/bin/photocraft");
+        assert_eq!(repoint(&elsewhere.display().to_string(), &from, &to), elsewhere.display().to_string());
     }
 
     #[cfg(unix)]
