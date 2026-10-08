@@ -26,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use craftcenter_catalogue::App;
 use craftcenter_select::{Choice, Format};
+use craftcenter_verify::manifest::{FileEntry, LinkEntry, Manifest, Verification, ignorable, manifest_path};
 
 pub use paths::Paths;
 pub use program::check_is_program;
@@ -61,6 +62,10 @@ pub enum Error {
     DestinationExists { path: String },
     #[error("{path}: {found}, not a program this machine can run; nothing was replaced")]
     NotAProgram { path: String, found: &'static str },
+    #[error("{app} on disk is not the install that was recorded ({what}); nothing was moved")]
+    NotAsInstalled { app: String, what: String },
+    #[error(transparent)]
+    Verify(#[from] craftcenter_verify::Error),
 }
 
 /// Bytes done, and the total when one is known. The same shape the download reporter uses, so a
@@ -112,8 +117,13 @@ pub fn install(paths: &Paths, request: &Request<'_>) -> Result<Installed, Error>
         }
     };
 
+    // Everything that went on disk, file by file. Written before the state entry that names it,
+    // so an interruption between the two leaves a manifest nothing points at — which the next
+    // install overwrites — rather than a record pointing at a manifest that is not there.
+    let manifest = write_manifest(paths, &request.app.slug, Path::new(&installed.dir))?;
+
     // Keep the version that was there until the new one has been launched once.
-    let installed = Installed { previous: previous.as_ref().map(|p| p.dir.clone()).filter(|d| d != &installed.dir), ..installed };
+    let installed = Installed { previous: previous.as_ref().map(|p| p.dir.clone()).filter(|d| d != &installed.dir), manifest: Some(manifest), ..installed };
 
     let mut state = State::load(&paths.state)?;
     state.installed.insert(request.app.slug.clone(), installed.clone());
@@ -138,6 +148,8 @@ fn home_of(installed: &Installed) -> Option<PathBuf> {
 fn record(request: &Request<'_>, root: &Path, dir: &Path, launcher: &Path) -> Installed {
     Installed {
         root: Some(root.display().to_string()),
+        // Filled in by `install` once the tree it describes is complete.
+        manifest: None,
         version: request.version.to_owned(),
         tag: request.tag.to_owned(),
         asset: request.choice.asset.clone(),
@@ -435,6 +447,7 @@ pub fn remove(paths: &Paths, app: &App) -> Result<(), Error> {
     let _ = std::fs::remove_file(paths.data.join("applications").join(format!("{}.desktop", app.app_id)));
     let _ = std::fs::remove_file(paths.data.join("icons/hicolor/64x64/apps").join(format!("{}.png", app.app_id)));
     let _ = std::fs::remove_file(paths.data.join("CraftCenter").join(format!("{}.lnk", app.name)));
+    let _ = std::fs::remove_file(paths.manifest(&app.slug));
 
     state.save(&paths.state)
 }
@@ -446,6 +459,104 @@ pub fn app_home(paths: &Paths, app: &App, installed: &Installed) -> PathBuf {
         // A bundle is its own root; anything else keeps its versions in a directory per app.
         if installed.format == Format::Dmg { PathBuf::from(&installed.dir) } else { paths.app_dir(&app.slug) }
     })
+}
+
+/// Record every file of an installed tree, beside the state entry that will name it.
+///
+/// Returns the digest of the file that was written, which goes into that entry.
+fn write_manifest(paths: &Paths, slug: &str, dir: &Path) -> Result<String, Error> {
+    let text = Manifest::of_tree(dir)?.to_json()?;
+    fs::write_atomic(&paths.manifest(slug), text.as_bytes())?;
+    digest_of(&text)
+}
+
+/// The digest of a record's own bytes.
+fn digest_of(text: &str) -> Result<String, Error> {
+    let digest = craftcenter_verify::sha256_reader(text.as_bytes()).map_err(|source| Error::Io { path: "the file record".to_owned(), source })?;
+    Ok(craftcenter_verify::hex(&digest))
+}
+
+/// The three ways there can be nothing to check an install against. They are printed to the
+/// person who asked, so each says what to do about it and not only what is wrong.
+const INSTALLED_BEFORE: &str = "installed before CraftCenter recorded a digest for every file; reinstall it to enable a full check";
+const RECORD_GONE: &str = "the record of this install's files is missing, so there is nothing to check against; reinstall it to write a new one";
+const RECORD_REPLACED: &str = "the record of this install's files is not the one written when it was installed; reinstall it to write a new one";
+const NO_SELF_RECORD: &str =
+    "this build has not recorded its own files, so there is nothing to check against; it was not installed by CraftCenter's own update";
+
+/// What there is to check an install against.
+enum Recorded {
+    Manifest(Manifest),
+    /// Nothing, and the sentence that says why.
+    Nothing(&'static str),
+}
+
+/// Read the manifest a record names — and only the one it names.
+///
+/// The digest in the record is not a signature: both files are the user's own, and a hand that
+/// can rewrite the tree can rewrite both. What it does separate is an install made before
+/// CraftCenter recorded manifests, which cannot be checked, from one whose manifest has since
+/// been removed or swapped, which is worth saying out loud.
+fn recorded(paths: &Paths, slug: &str, installed: &Installed) -> Result<Recorded, Error> {
+    let Some(expected) = &installed.manifest else {
+        return Ok(Recorded::Nothing(INSTALLED_BEFORE));
+    };
+    let path = paths.manifest(slug);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Recorded::Nothing(RECORD_GONE)),
+        Err(source) => return Err(Error::Io { path: path.display().to_string(), source }),
+    };
+    if !digest_of(&text)?.eq_ignore_ascii_case(expected) {
+        return Ok(Recorded::Nothing(RECORD_REPLACED));
+    }
+    Ok(Recorded::Manifest(Manifest::parse(&text)?))
+}
+
+/// Check what is on disk against the record of what was installed.
+///
+/// This is what Verify means. The digest of the downloaded asset stays in the record and stays
+/// the answer to "where did these bytes come from", but for three of the four formats it is the
+/// digest of an *archive* — and the question a person asks of an installed app is whether what is
+/// on disk is still what was put there.
+pub fn verify_installed(paths: &Paths, app: &App, installed: &Installed) -> Result<Verification, Error> {
+    let manifest = match recorded(paths, &app.slug, installed)? {
+        Recorded::Nothing(reason) => return Ok(Verification::not_verifiable(reason)),
+        Recorded::Manifest(manifest) => manifest,
+    };
+    let dir = Path::new(&installed.dir);
+    if !dir.exists() {
+        // The whole tree is gone. That is an answer — every recorded file is missing — rather
+        // than a failure to go and look.
+        return Ok(manifest.compare(&Manifest::new(Vec::new(), Vec::new())));
+    }
+    Ok(manifest.verify_tree(dir)?)
+}
+
+/// Record CraftCenter's own executable, after a self-update has put a new one in place.
+///
+/// The same question asked of the installer as of anything it installs, with two differences.
+/// The program is one file in a directory full of files nobody here installed, so the record
+/// names that file and the check does not go looking for anything else. And there is no state
+/// entry to carry the record's digest, so a build with no record reads as one that did not come
+/// from CraftCenter's own update — which is what a packaged build is — rather than as tampering.
+pub fn record_self(paths: &Paths, slug: &str, exe: &Path) -> Result<(), Error> {
+    let text = Manifest::of_file(exe)?.to_json()?;
+    fs::write_atomic(&paths.manifest(slug), text.as_bytes())
+}
+
+/// Check CraftCenter's own executable against what [`record_self`] wrote.
+pub fn verify_self(paths: &Paths, slug: &str, exe: &Path) -> Result<Verification, Error> {
+    let path = paths.manifest(slug);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Verification::not_verifiable(NO_SELF_RECORD)),
+        Err(source) => return Err(Error::Io { path: path.display().to_string(), source }),
+    };
+    let Some(dir) = exe.parent() else {
+        return Ok(Verification::not_verifiable(NO_SELF_RECORD));
+    };
+    Ok(Manifest::parse(&text)?.verify_listed(dir)?)
 }
 
 /// Can apps be installed into this directory?
@@ -566,13 +677,30 @@ pub fn move_app(paths: &Paths, app: &App, destination: &Path, progress: Progress
     // Staged beside its destination, so the rename into place stays on one filesystem.
     let staged = destination.join(format!(".{}.moving", app.slug));
     let _ = std::fs::remove_dir_all(&staged);
-    let total = tree_size(&from)?;
-    let mut copied = 0u64;
-    let result = copy_tree_verified(&from, &staged, &mut copied, total, progress);
-    if let Err(error) = result {
+    let mut copier = Copier { root: &from, observed: Observed::default(), copied: 0, total: tree_size(&from)? };
+    if let Err(error) = copier.tree(&from, &staged, progress) {
         let _ = std::fs::remove_dir_all(&staged);
         return Err(error);
     }
+
+    // Reading the copy back proves it is byte for byte what was there. It proves nothing about
+    // whether what was there is what was installed — and a move that carried a tampered tree to
+    // a new folder, re-aimed the launcher at it and left the record saying all was well would
+    // launder it. So the copy is checked against the record of the install as well, using the
+    // digests the copy has just computed rather than reading the whole tree a third time.
+    if let Recorded::Manifest(manifest) = recorded(paths, &app.slug, &installed)? {
+        let report = match manifest_path(&from, Path::new(&installed.dir)) {
+            Some(prefix) => manifest.compare(&copier.observed.under(&prefix)),
+            // A record whose version directory is not inside the home it names: read the tree
+            // itself rather than let the question go unanswered.
+            None => manifest.verify_tree(Path::new(&installed.dir))?,
+        };
+        if !report.is_intact() {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(Error::NotAsInstalled { app: app.name.clone(), what: report.summary() });
+        }
+    }
+
     std::fs::rename(&staged, &to).map_err(fs::io_err(&to))?;
 
     let moved = Installed {
@@ -626,46 +754,105 @@ fn tree_size(root: &Path) -> Result<u64, Error> {
     Ok(total)
 }
 
-/// Copy a tree, hashing every file on both sides and reporting progress in bytes.
+/// What a copy saw while it was making it, in the shape a manifest is in.
 ///
-/// Verifying the copy is the point of doing it this way: a move is the one thing in this program
-/// that can lose the only copy of something, so nothing is believed until it has been read back.
-fn copy_tree_verified(from: &Path, to: &Path, copied: &mut u64, total: u64, progress: Progress<'_>) -> Result<(), Error> {
-    let meta = std::fs::symlink_metadata(from).map_err(fs::io_err(from))?;
+/// Kept rather than thrown away because the copy hashes every file on both sides anyway: a move
+/// can then check what it has copied against the record of the install for free.
+#[derive(Default)]
+struct Observed {
+    files: Vec<FileEntry>,
+    links: Vec<LinkEntry>,
+}
 
-    #[cfg(unix)]
-    if meta.file_type().is_symlink() {
-        // Followed rather than recreated, a symlink inside a macOS bundle would turn into a
-        // second copy of whatever it points at.
-        let target = std::fs::read_link(from).map_err(fs::io_err(from))?;
-        let _ = std::fs::remove_file(to);
+impl Observed {
+    /// The part of what was copied that lies under `prefix`, with the prefix taken off.
+    ///
+    /// A manifest's paths are relative to the version directory. A move copies the app's whole
+    /// home, which holds that directory and, until it is pruned, the version it replaced. This is
+    /// what lines the two up.
+    fn under(&self, prefix: &str) -> Manifest {
+        let strip = |path: &str| -> Option<String> {
+            if prefix.is_empty() {
+                return Some(path.to_owned());
+            }
+            path.strip_prefix(prefix)?.strip_prefix('/').map(str::to_owned)
+        };
+        Manifest::new(
+            self.files.iter().filter_map(|file| strip(&file.path).map(|path| FileEntry { path, sha256: file.sha256.clone(), size: file.size })).collect(),
+            self.links.iter().filter_map(|link| strip(&link.path).map(|path| LinkEntry { path, target: link.target.clone() })).collect(),
+        )
+    }
+}
+
+/// A verified copy of a tree, in progress.
+struct Copier<'a> {
+    /// The tree being copied, so that every file can be recorded by its path relative to it.
+    root: &'a Path,
+    observed: Observed,
+    copied: u64,
+    total: u64,
+}
+
+impl Copier<'_> {
+    /// Copy a tree, hashing every file on both sides and reporting progress in bytes.
+    ///
+    /// Verifying the copy is the point of doing it this way: a move is the one thing in this
+    /// program that can lose the only copy of something, so nothing is believed until it has
+    /// been read back.
+    fn tree(&mut self, from: &Path, to: &Path, progress: Progress<'_>) -> Result<(), Error> {
+        let meta = std::fs::symlink_metadata(from).map_err(fs::io_err(from))?;
+
+        #[cfg(unix)]
+        if meta.file_type().is_symlink() {
+            // Followed rather than recreated, a symlink inside a macOS bundle would turn into a
+            // second copy of whatever it points at.
+            let target = std::fs::read_link(from).map_err(fs::io_err(from))?;
+            let _ = std::fs::remove_file(to);
+            if let Some(parent) = to.parent() {
+                fs::mkdir_p(parent)?;
+            }
+            std::os::unix::fs::symlink(&target, to).map_err(fs::io_err(to))?;
+            if let Some(path) = self.recordable(from) {
+                self.observed.links.push(LinkEntry { path, target: target.to_string_lossy().into_owned() });
+            }
+            return Ok(());
+        }
+
+        if meta.is_dir() {
+            fs::mkdir_p(to)?;
+            for entry in std::fs::read_dir(from).map_err(fs::io_err(from))? {
+                let entry = entry.map_err(fs::io_err(from))?;
+                self.tree(&entry.path(), &to.join(entry.file_name()), progress)?;
+            }
+            return Ok(());
+        }
+
         if let Some(parent) = to.parent() {
             fs::mkdir_p(parent)?;
         }
-        return std::os::unix::fs::symlink(&target, to).map_err(fs::io_err(to));
-    }
-
-    if meta.is_dir() {
-        fs::mkdir_p(to)?;
-        for entry in std::fs::read_dir(from).map_err(fs::io_err(from))? {
-            let entry = entry.map_err(fs::io_err(from))?;
-            copy_tree_verified(&entry.path(), &to.join(entry.file_name()), copied, total, progress)?;
+        std::fs::copy(from, to).map_err(fs::io_err(to))?;
+        let mismatch = || Error::CopyMismatch { path: from.display().to_string() };
+        let original = craftcenter_verify::sha256_file(from).map_err(|_| mismatch())?;
+        if craftcenter_verify::sha256_file(to).map_err(|_| mismatch())? != original {
+            return Err(mismatch());
         }
-        return Ok(());
+        if let Some(path) = self.recordable(from) {
+            self.observed.files.push(FileEntry { path, sha256: craftcenter_verify::hex(&original), size: meta.len() });
+        }
+        self.copied = self.copied.saturating_add(meta.len());
+        progress(self.copied, Some(self.total));
+        Ok(())
     }
 
-    if let Some(parent) = to.parent() {
-        fs::mkdir_p(parent)?;
+    /// How a manifest would spell `path`, for the entries that belong in one. A name a manifest
+    /// never records is copied like anything else and then left out of the comparison, because
+    /// the two sets have to be drawn up by the same rule.
+    fn recordable(&self, path: &Path) -> Option<String> {
+        if path.file_name().is_some_and(|name| ignorable(&name.to_string_lossy())) {
+            return None;
+        }
+        manifest_path(self.root, path)
     }
-    std::fs::copy(from, to).map_err(fs::io_err(to))?;
-    let mismatch = || Error::CopyMismatch { path: from.display().to_string() };
-    let original = craftcenter_verify::sha256_file(from).map_err(|_| mismatch())?;
-    if craftcenter_verify::sha256_file(to).map_err(|_| mismatch())? != original {
-        return Err(mismatch());
-    }
-    *copied = copied.saturating_add(meta.len());
-    progress(*copied, Some(total));
-    Ok(())
 }
 
 /// Drop the version that was replaced, once the new one has run.
@@ -976,6 +1163,7 @@ pub fn clean_after_self_update(current_exe: &Path) {
 mod tests {
     use craftcenter_catalogue::Catalogue;
     use craftcenter_select::Note;
+    use craftcenter_verify::manifest::Level;
 
     use super::*;
 
@@ -996,6 +1184,37 @@ mod tests {
 
     fn choice(asset: &str, format: Format) -> Choice {
         Choice { asset: asset.to_owned(), format, note: None }
+    }
+
+    /// A `.tar.gz` with one entry per `(name, body)`, written the way a real release asset is: a
+    /// single top-level directory holding an FHS tree. Shared by every test below that needs a
+    /// tarball fixture, so the archive-building boilerplate exists in one place.
+    fn write_tar_gz(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).expect("create");
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        for (name, body) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append_data(&mut header, *name, *body).expect("append");
+        }
+        builder.into_inner().expect("finish").finish().expect("flush");
+    }
+
+    /// A portable `.zip` with one entry per `(name, body)`, built the same way `fs::tests` builds
+    /// one: the `zip` crate is already a dependency of this crate, so no new one is needed to test
+    /// the format it unpacks.
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).expect("create");
+        let mut writer = zip::ZipWriter::new(file);
+        for (name, body) in entries {
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file(*name, options).expect("entry");
+            std::io::Write::write_all(&mut writer, body).expect("write");
+        }
+        writer.finish().expect("finish");
     }
 
     #[test]
@@ -1555,5 +1774,359 @@ mod tests {
 
         remove(&changed, &app).expect("removed");
         assert!(!home.exists(), "remove deletes the home the app actually had");
+    }
+
+    #[test]
+    fn an_appimage_round_trip_is_recorded_and_a_tampered_file_is_caught() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+        assert!(installed.manifest.is_some(), "the state record carries the manifest's own digest");
+        assert!(paths.manifest("photocraft").is_file());
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Ok);
+        assert_eq!(report.listed, 1);
+
+        let target = paths.version_dir("photocraft", "0.3.0").join("ai.storyteller.photocraft.AppImage");
+        std::fs::write(&target, "version TWO").expect("tamper, same length as the original");
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Modified);
+        assert_eq!(report.modified, ["ai.storyteller.photocraft.AppImage"]);
+    }
+
+    /// For an AppImage, re-hashing the one installed file against the asset's own digest would
+    /// have worked, because the install is a byte copy. For a tarball it never could: the bytes on
+    /// disk are the unpacked tree, nothing like the archive they came out of, so this is the case
+    /// a per-file manifest exists to cover.
+    #[test]
+    fn a_tarball_install_verifies_file_by_file() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = source.path().join("photocraft-0.3.0-linux-x86_64.tar.gz");
+        write_tar_gz(
+            &archive,
+            &[("photocraft-0.3.0-linux-x86_64/bin/photocraft", b"the app"), ("photocraft-0.3.0-linux-x86_64/bin/photocraft-cli", b"the cli")],
+        );
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.tar.gz", Format::TarGz);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Ok);
+        assert_eq!(report.listed, 2, "every file the archive put in the version directory is accounted for");
+
+        let binary = Path::new(&installed.dir).join("photocraft-0.3.0-linux-x86_64/bin/photocraft");
+        std::fs::write(&binary, "the bpp").expect("tamper, same length as the original");
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Modified);
+        assert_eq!(report.modified, ["photocraft-0.3.0-linux-x86_64/bin/photocraft"]);
+    }
+
+    #[test]
+    fn a_file_missing_from_a_tarball_install_is_incomplete_not_modified() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = source.path().join("photocraft-0.3.0-linux-x86_64.tar.gz");
+        write_tar_gz(
+            &archive,
+            &[("photocraft-0.3.0-linux-x86_64/bin/photocraft", b"the app"), ("photocraft-0.3.0-linux-x86_64/bin/photocraft-cli", b"the cli")],
+        );
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.tar.gz", Format::TarGz);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        let cli = Path::new(&installed.dir).join("photocraft-0.3.0-linux-x86_64/bin/photocraft-cli");
+        std::fs::remove_file(&cli).expect("remove");
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Incomplete);
+        assert_eq!(report.missing, ["photocraft-0.3.0-linux-x86_64/bin/photocraft-cli"]);
+        assert!(report.modified.is_empty());
+    }
+
+    /// `install_portable_zip` only writes a Start Menu shortcut on Windows, so the rest of it,
+    /// including this check, runs here too.
+    #[test]
+    fn a_portable_zip_install_verifies() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = source.path().join("photocraft-0.3.0-windows-x64-portable.zip");
+        write_zip(&archive, &[("photocraft-0.3.0-windows-x64/photocraft.exe", b"MZ"), ("photocraft-0.3.0-windows-x64/resources/strings.json", b"{}")]);
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-windows-x64-portable.zip", Format::PortableZip);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+        assert_eq!(verify_installed(&paths, &app, &installed).expect("verified").level(), Level::Ok);
+
+        let exe = Path::new(&installed.dir).join("photocraft-0.3.0-windows-x64/photocraft.exe");
+        std::fs::write(&exe, "NO").expect("tamper, same length as the original");
+        assert_eq!(verify_installed(&paths, &app, &installed).expect("verified").level(), Level::Modified);
+    }
+
+    /// `install_dmg` runs `hdiutil`, which this sandbox does not have, so the bundle an install
+    /// would have produced is built by hand and recorded the same way `install` records one:
+    /// `write_manifest` over the bundle, then an `Installed` whose `dir` and `root` both name it.
+    #[test]
+    fn a_hand_built_bundle_verifies_the_way_a_dmg_install_would() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let bundle_root = tempfile::tempdir().expect("temp dir");
+        let bundle = bundle_root.path().join("PhotoCraft.app");
+        fs::mkdir_p(&bundle.join("Contents/MacOS")).expect("create");
+        std::fs::write(bundle.join("Contents/MacOS/PhotoCraft"), "the app").expect("write");
+        std::fs::write(bundle.join("Contents/Info.plist"), "<plist/>").expect("write");
+        #[cfg(unix)]
+        {
+            fs::mkdir_p(&bundle.join("Contents/Frameworks")).expect("create");
+            std::os::unix::fs::symlink("Versions/A", bundle.join("Contents/Frameworks/Current")).expect("link");
+        }
+
+        let digest = write_manifest(&paths, "photocraft", &bundle).expect("manifest written");
+        let installed = Installed {
+            version: "0.3.0".to_owned(),
+            tag: "v0.3.0".to_owned(),
+            asset: "PhotoCraft-0.3.0.dmg".to_owned(),
+            sha256: "0".repeat(64),
+            format: Format::Dmg,
+            dir: bundle.display().to_string(),
+            root: Some(bundle.display().to_string()),
+            manifest: Some(digest),
+            launcher: bundle.display().to_string(),
+            installed_at: 0,
+            previous: None,
+        };
+        let app = app("photocraft");
+
+        assert_eq!(verify_installed(&paths, &app, &installed).expect("verified").level(), Level::Ok);
+
+        std::fs::write(bundle.join("Contents/MacOS/PhotoCraft"), "the bpp").expect("tamper, same length as the original");
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Modified);
+        assert_eq!(report.modified, ["Contents/MacOS/PhotoCraft"]);
+    }
+
+    #[test]
+    fn an_extra_file_is_reported_and_file_manager_noise_is_not() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = source.path().join("photocraft-0.3.0-linux-x86_64.tar.gz");
+        write_tar_gz(
+            &archive,
+            &[("photocraft-0.3.0-linux-x86_64/bin/photocraft", b"the app"), ("photocraft-0.3.0-linux-x86_64/bin/photocraft-cli", b"the cli")],
+        );
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.tar.gz", Format::TarGz);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        std::fs::write(Path::new(&installed.dir).join("photocraft.log"), "yesterday").expect("write");
+        std::fs::write(Path::new(&installed.dir).join(".DS_Store"), "noise").expect("write");
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Ok, "an extra file is reported, not failed");
+        assert_eq!(report.extra, ["photocraft.log"]);
+        assert!(!report.extra.iter().any(|path| path.contains("DS_Store")), "{:?}", report.extra);
+    }
+
+    /// A record from before CraftCenter wrote manifests at all has no digest to check against —
+    /// that reads as "cannot tell", never as a tampered install.
+    #[test]
+    fn a_pre_manifest_record_is_not_verifiable() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        let mut state = State::load(&paths.state).expect("state");
+        state.installed.get_mut("photocraft").expect("entry").manifest = None;
+        state.save(&paths.state).expect("saved");
+        let installed = State::load(&paths.state).expect("state").get("photocraft").cloned().expect("entry");
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::NotVerifiable);
+        assert!(report.summary().contains("reinstall"), "{}", report.summary());
+    }
+
+    #[test]
+    fn a_deleted_manifest_is_not_verifiable() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        std::fs::remove_file(paths.manifest("photocraft")).expect("remove");
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::NotVerifiable);
+        assert!(report.summary().contains("missing"), "{}", report.summary());
+    }
+
+    /// The most important test in this file. The digest the state record carries of the manifest
+    /// is what catches a manifest swapped for one that matches a tampered tree; without it, a hand
+    /// that can rewrite the installed files could rewrite the manifest beside them to match and
+    /// Verify would say everything was fine. Be plain about what this is and is not: it is not a
+    /// signature — both files are the user's own and the same hand can rewrite either — it only
+    /// checks that the two still agree with each other.
+    #[test]
+    fn a_manifest_rewritten_to_match_a_tampered_tree_is_still_not_accepted() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        let target = Path::new(&installed.dir).join("ai.storyteller.photocraft.AppImage");
+        std::fs::write(&target, "version TWO").expect("tamper, same length as the original");
+        let forged = Manifest::of_tree(Path::new(&installed.dir)).expect("walked").to_json().expect("serialised");
+        std::fs::write(paths.manifest("photocraft"), forged).expect("write the forged manifest over the real one");
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::NotVerifiable);
+        assert!(report.summary().contains("not the one written when it was installed"), "{}", report.summary());
+    }
+
+    #[test]
+    fn an_update_rewrites_the_manifest_for_the_new_version() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let app = app("photocraft");
+
+        let first = appimage(source.path(), "version one");
+        let c1 = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        install(&paths, &request(&app, "0.3.0", &c1, &first)).expect("first install");
+
+        let second = source.path().join("photocraft-0.4.0-linux-x86_64.AppImage");
+        std::fs::write(&second, "version two").expect("write");
+        let c2 = choice("photocraft-0.4.0-linux-x86_64.AppImage", Format::AppImage);
+        let updated = install(&paths, &request(&app, "0.4.0", &c2, &second)).expect("upgrade");
+
+        assert_eq!(verify_installed(&paths, &app, &updated).expect("verified").level(), Level::Ok);
+        let text = std::fs::read_to_string(paths.manifest("photocraft")).expect("read");
+        assert!(!text.contains("0.3.0"), "the old version directory left nothing behind: {text}");
+    }
+
+    #[test]
+    fn remove_takes_the_manifest_away_too() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+        assert!(paths.manifest("photocraft").is_file());
+
+        remove(&paths, &app).expect("removed");
+        assert!(!paths.manifest("photocraft").exists());
+    }
+
+    /// The whole tree being gone is an answer the manifest can give on its own, with no special
+    /// case: every path it lists simply is not there.
+    #[test]
+    fn a_deleted_install_directory_reports_everything_as_missing() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        std::fs::remove_dir_all(Path::new(&installed.dir)).expect("remove");
+
+        let report = verify_installed(&paths, &app, &installed).expect("verified");
+        assert_eq!(report.level(), Level::Incomplete);
+        assert_eq!(report.missing, ["ai.storyteller.photocraft.AppImage"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_move_refuses_to_carry_a_tampered_tree() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        let installed = install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+        let home = PathBuf::from(installed.root.clone().expect("a home"));
+
+        let target = Path::new(&installed.dir).join("ai.storyteller.photocraft.AppImage");
+        std::fs::write(&target, "version TWO").expect("tamper, same length as the original");
+
+        let elsewhere = tempfile::tempdir().expect("temp dir");
+        let mut progress = |_: u64, _: Option<u64>| {};
+        let result = move_app(&paths, &app, elsewhere.path(), &mut progress);
+        assert!(matches!(result, Err(Error::NotAsInstalled { .. })), "{result:?}");
+
+        assert!(home.exists(), "the original tree is still there");
+        assert!(!elsewhere.path().join("photocraft").exists(), "nothing was moved to the destination");
+        assert_eq!(
+            State::load(&paths.state).expect("state").get("photocraft").and_then(|i| i.root.clone()),
+            Some(home.display().to_string()),
+            "the record still points at the old home"
+        );
+    }
+
+    /// The manifest's paths are relative to the installed tree, which is what lets a move carry
+    /// the record's meaning along with it: an intact tree verifies just as well after the move as
+    /// before it.
+    #[cfg(unix)]
+    #[test]
+    fn moving_an_intact_tree_still_verifies_afterwards() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let source = tempfile::tempdir().expect("temp dir");
+        let archive = appimage(source.path(), "version one");
+        let app = app("photocraft");
+        let choice = choice("photocraft-0.3.0-linux-x86_64.AppImage", Format::AppImage);
+        install(&paths, &request(&app, "0.3.0", &choice, &archive)).expect("installed");
+
+        let elsewhere = tempfile::tempdir().expect("temp dir");
+        let mut progress = |_: u64, _: Option<u64>| {};
+        let moved = move_app(&paths, &app, elsewhere.path(), &mut progress).expect("moved");
+
+        assert_eq!(verify_installed(&paths, &app, &moved).expect("verified").level(), Level::Ok);
+    }
+
+    #[test]
+    fn craftcenters_own_build_records_and_checks_one_file() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("craftcenter");
+        std::fs::write(&exe, "the program").expect("write");
+
+        record_self(&paths, "craftcenter", &exe).expect("recorded");
+        assert_eq!(verify_self(&paths, "craftcenter", &exe).expect("verified").level(), Level::Ok);
+
+        std::fs::write(dir.path().join("unrelated"), "not ours").expect("write");
+        assert!(verify_self(&paths, "craftcenter", &exe).expect("verified").extra.is_empty(), "a listed-only check does not go looking for extras");
+
+        std::fs::write(&exe, "tampered").expect("tamper");
+        assert_eq!(verify_self(&paths, "craftcenter", &exe).expect("verified").level(), Level::Modified);
+
+        assert_eq!(
+            verify_self(&paths, "someone-else", &exe).expect("verified").level(),
+            Level::NotVerifiable,
+            "no record at all reads as nothing to check, not as tampering"
+        );
     }
 }

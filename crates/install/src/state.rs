@@ -31,6 +31,14 @@ pub struct Installed {
     /// be chosen, where today's layout is a safe guess.
     #[serde(default)]
     pub root: Option<String>,
+    /// The SHA-256, in hex, of the per-file manifest recorded beside this entry.
+    ///
+    /// Its presence is what separates an install that can be checked file by file from one
+    /// recorded before CraftCenter wrote manifests at all — which is "not verifiable" rather
+    /// than broken. Both files are the user's own and a determined hand can rewrite either; what
+    /// this digest catches is a manifest removed or swapped without the record being touched.
+    #[serde(default)]
+    pub manifest: Option<String>,
     /// What to run.
     pub launcher: String,
     /// Seconds since the Unix epoch.
@@ -82,6 +90,7 @@ mod tests {
             format: Format::AppImage,
             dir: "/home/example/.local/share/craftcenter/apps/photocraft/0.3.0".to_owned(),
             root: Some("/home/example/.local/share/craftcenter/apps/photocraft".to_owned()),
+            manifest: Some("f".repeat(64)),
             launcher: "/home/example/.local/bin/photocraft".to_owned(),
             installed_at: 1_700_000_000,
             previous: None,
@@ -95,13 +104,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("state.toml");
         let mut state = State::default();
-        state.installed.insert("photocraft".to_owned(), Installed { root: None, ..entry() });
+        state.installed.insert("photocraft".to_owned(), Installed { root: None, manifest: None, ..entry() });
         state.save(&path).expect("saved");
 
         let text = std::fs::read_to_string(&path).expect("read back");
         assert!(!text.contains("root"), "an absent home is not written out");
+        assert!(!text.contains("manifest"), "neither is an absent manifest");
         let read = State::load(&path).expect("loaded");
         assert_eq!(read.get("photocraft").and_then(|installed| installed.root.clone()), None);
+        assert_eq!(read.get("photocraft").and_then(|installed| installed.manifest.clone()), None, "an older record is not verifiable, not broken");
         assert_eq!(read.get("photocraft").map(|installed| installed.version.clone()).as_deref(), Some("0.3.0"));
     }
 

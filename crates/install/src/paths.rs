@@ -108,6 +108,19 @@ impl Paths {
         self.cache.join("self-update")
     }
 
+    /// Where the per-file record of one app's install goes: beside the state file, one file per
+    /// app.
+    ///
+    /// Beside the state rather than inside it, because a record of every file of a dozen apps
+    /// would be read and rewritten on every operation that touches any of them, and state.toml
+    /// is read to draw a single row. Beside the state rather than inside the installed tree,
+    /// because it is CraftCenter's bookkeeping and not the app's — it must not travel with a
+    /// copied folder, and it must not be the first thing a hostile hand finds next to the binary
+    /// it has just rewritten.
+    pub fn manifest(&self, slug: &str) -> PathBuf {
+        self.state.with_file_name("manifests").join(format!("{slug}.json"))
+    }
+
     /// Create the directories an install needs. Done up front so a failure happens before
     /// anything is downloaded.
     pub fn create(&self) -> Result<(), Error> {
@@ -133,6 +146,7 @@ mod tests {
             assert!(path.starts_with(root), "{} escaped {}", path.display(), root.display());
         }
         assert_eq!(paths.version_dir("photocraft", "0.3.0"), root.join("apps/photocraft/0.3.0"));
+        assert_eq!(paths.manifest("photocraft"), root.join("state/manifests/photocraft.json"));
     }
 
     #[test]
@@ -145,6 +159,7 @@ mod tests {
         assert_eq!(paths.app_dir("photocraft"), chosen.join("photocraft"));
         // The bookkeeping is CraftCenter's own and does not follow the apps around.
         assert_eq!(paths.state, default.state);
+        assert_eq!(paths.manifest("photocraft"), default.manifest("photocraft"));
         assert_eq!(paths.cache, default.cache);
         assert_eq!(paths.bin, default.bin);
         assert_eq!(paths.data, default.data);
