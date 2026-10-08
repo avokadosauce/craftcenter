@@ -886,6 +886,10 @@ pub struct SelfUpdateRequest<'a> {
 pub struct Replaced {
     /// What now holds the new build: the program file, or the `.app` bundle around it.
     pub target: PathBuf,
+    /// The program file itself — the same as `target` for every format but a bundle swap, where
+    /// it is the executable inside the bundle. This is what gets recorded, because it is what
+    /// `verify craftcenter` can later go and read.
+    pub program: PathBuf,
     /// The build that was replaced, kept until the new one has started once.
     pub previous: PathBuf,
 }
@@ -943,7 +947,7 @@ fn no_program_in(request: &SelfUpdateRequest<'_>) -> Error {
 fn replace_program(request: &SelfUpdateRequest<'_>, program: &Path) -> Result<Replaced, Error> {
     let staged = stage_sibling(request.current_exe, program)?;
     match self_replace(request.current_exe, &staged) {
-        Ok(previous) => Ok(Replaced { target: request.current_exe.to_path_buf(), previous }),
+        Ok(previous) => Ok(Replaced { target: request.current_exe.to_path_buf(), program: request.current_exe.to_path_buf(), previous }),
         Err(error) => {
             let _ = std::fs::remove_file(&staged);
             Err(error)
@@ -967,14 +971,21 @@ fn replace_from_bundle(request: &SelfUpdateRequest<'_>, bundle: &Path) -> Result
     let staged = stage_bundle(bundle, &destination)?;
     // Check the bundle's own program before the bundle is renamed into place: a `.app` holding
     // the wrong thing would be just as unopenable as the disk image 0.2.0 left behind.
-    let checked = bundle_program(&staged, request.current_exe).ok_or_else(|| no_program_in(request)).and_then(|program| check_is_program(&program));
-    if let Err(error) = checked {
-        let _ = std::fs::remove_dir_all(&staged);
-        return Err(error);
-    }
+    let checked =
+        bundle_program(&staged, request.current_exe).ok_or_else(|| no_program_in(request)).and_then(|program| check_is_program(&program).map(|()| program));
+    let staged_program = match checked {
+        Ok(program) => program,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(error);
+        }
+    };
+    // Where that program will be once the staged bundle has taken the running one's name. Worked
+    // out before the rename, because afterwards the staged path no longer exists to ask.
+    let program = staged_program.strip_prefix(&staged).map(|inside| destination.join(inside)).unwrap_or_else(|_| staged_program.clone());
 
     let previous = swap_tree(&destination, &staged)?;
-    Ok(Replaced { target: destination, previous })
+    Ok(Replaced { target: destination, program, previous })
 }
 
 /// The `.app` the running program sits inside, if it sits inside one. A build from source does
@@ -1566,6 +1577,7 @@ mod tests {
         assert_eq!(replaced.previous, applications.join(".CraftCenter.app.old"));
         assert_eq!(mark_of(&replaced.previous.join("Contents/MacOS/craftcenter")), "old build");
         assert!(!staged_path(&installed).exists(), "the staged bundle was renamed, not copied");
+        assert_eq!(replaced.program, exe, "a bundle is what was swapped; the program is the file inside it");
 
         clean_after_self_update(&exe);
         assert!(!replaced.previous.exists(), "the previous bundle goes once the new build has run");
@@ -1586,6 +1598,42 @@ mod tests {
         assert_eq!(replaced.target, exe);
         assert_eq!(mark_of(&exe), "new build", "the Mach-O came out of the bundle in the image");
         assert_eq!(mark_of(&replaced.previous), "old build");
+    }
+
+    /// The join between a self-update and Verify: whatever the swap actually put on disk is what
+    /// gets recorded, and the record has to be readable from the path the program runs under.
+    /// For every format but a bundle those are the same file; for a bundle the record must name
+    /// the executable inside it, because a `.app` directory has no digest to take.
+    #[test]
+    fn a_self_update_records_the_program_it_put_in_place() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::rooted(root.path());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let staging = dir.path().join("staging");
+
+        let exe = dir.path().join("bin/craftcenter");
+        write_program(&exe, "old build");
+        let archive = tarball(dir.path(), "new build");
+        let replaced = self_update(&self_request(&exe, Format::TarGz, "craftcenter-0.2.1-linux-x86_64.tar.gz", &archive, &staging)).expect("updated");
+
+        assert_eq!(replaced.program, exe);
+        record_self(&paths, "craftcenter", &replaced.program).expect("recorded");
+        assert_eq!(verify_self(&paths, "craftcenter", &exe).expect("verified").level(), Level::Ok);
+
+        let applications = dir.path().join("Applications");
+        let installed = bundle_tree(&applications, "CraftCenter.app", "old build");
+        let inside = installed.join("Contents/MacOS/craftcenter");
+        let fresh = bundle_tree(&dir.path().join("mnt"), "CraftCenter.app", "new build");
+        let image = disk_image(&dir.path().join("craftcenter-0.2.1-macos-universal.dmg"));
+        let request = self_request(&inside, Format::Dmg, "craftcenter-0.2.1-macos-universal.dmg", &image, &staging);
+        let replaced = replace_from_bundle(&request, &fresh).expect("updated");
+
+        assert_eq!(replaced.program, inside, "the file inside the bundle, not the bundle itself");
+        record_self(&paths, "craftcenter", &replaced.program).expect("recorded");
+        assert_eq!(verify_self(&paths, "craftcenter", &inside).expect("verified").level(), Level::Ok);
+
+        std::fs::write(&inside, "tampered").expect("tamper");
+        assert_eq!(verify_self(&paths, "craftcenter", &inside).expect("verified").level(), Level::Modified);
     }
 
     #[test]

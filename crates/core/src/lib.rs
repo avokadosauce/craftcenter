@@ -10,17 +10,27 @@ mod settings;
 
 use std::path::{Path, PathBuf};
 
-use craftcenter_catalogue::{App, Catalogue};
-use craftcenter_install::{Installed, Paths, State};
-use craftcenter_releases::{Cache, Cached, Client, Fetch, Release, Ureq, cache::now_secs};
+use craftcenter_install::State;
+use craftcenter_releases::{Cache, Cached, Client, Release, cache::now_secs};
 use craftcenter_select::{Choice, Platform, Preference, Unavailable, select};
 use craftcenter_verify::{Sums, hex};
 
-pub use craftcenter_catalogue::Kind;
+// The three types `Center::with` and `Row` are built out of. They were always part of this
+// facade's surface — there is no way to open a `Center` without naming a catalogue and a layout —
+// so they are re-exported rather than left to be fetched from a crate the caller should not have
+// to depend on.
+pub use craftcenter_catalogue::{App, Catalogue, Kind};
 pub use craftcenter_install::Error as InstallError;
 pub use craftcenter_install::clean_after_self_update;
+pub use craftcenter_install::{Installed, Paths};
 pub use craftcenter_releases::Error as ReleaseError;
+// The transport is part of this facade's surface, not an implementation detail of it: `Center`
+// is generic over it so that a test — or the desktop shell's own frame test — can drive the
+// whole program against recorded responses rather than the network.
+pub use craftcenter_releases::{Fetch, Response, Ureq};
 pub use craftcenter_select::{Arch, Format, Note, Os};
+// What Verify now answers with, for both front ends to print.
+pub use craftcenter_verify::manifest::{Level, Verification};
 pub use settings::Settings;
 
 #[derive(Debug, thiserror::Error)]
@@ -426,22 +436,23 @@ impl<F: Fetch> Center<F> {
         craftcenter_install::open_externally(&self.release_notes_url(slug)?).map_err(Error::from)
     }
 
-    /// Re-hash what is installed and compare it with the digest recorded at install time.
-    pub fn verify(&self, slug: &str) -> Result<(), Error> {
+    /// Check what is on disk against the record of what was installed.
+    ///
+    /// Four answers, not two: everything matches, something has changed, something is gone, or
+    /// there is nothing to check against — an app installed before CraftCenter recorded a digest
+    /// for every file is honestly not verifiable rather than either sound or broken.
+    ///
+    /// Asked of CraftCenter itself, this checks the running program against what its own last
+    /// self-update recorded. A build that arrived any other way has recorded nothing, and says so.
+    pub fn verify(&self, slug: &str) -> Result<Verification, Error> {
         let app = self.app(slug)?;
+        if app.is_self() {
+            let exe = std::env::current_exe().map_err(|_| Error::NoCurrentExe)?;
+            return Ok(craftcenter_install::verify_self(&self.paths, &app.slug, &exe)?);
+        }
         let state = State::load(&self.paths.state)?;
         let installed = state.get(slug).ok_or_else(|| InstallError::NotInstalled { app: app.name.clone() })?;
-
-        let path = match installed.format {
-            Format::AppImage => PathBuf::from(&installed.dir).join(format!("{}.AppImage", app.app_id)),
-            _ => PathBuf::from(&installed.launcher),
-        };
-        let actual = hex(&craftcenter_verify::sha256_file(&path)?);
-        if actual == installed.sha256 {
-            Ok(())
-        } else {
-            Err(craftcenter_verify::Error::Mismatch { name: installed.asset.clone(), expected: installed.sha256.clone(), actual }.into())
-        }
+        Ok(craftcenter_install::verify_installed(&self.paths, app, installed)?)
     }
 
     /// Replace CraftCenter with a newer build of itself.
@@ -464,13 +475,20 @@ impl<F: Fetch> Center<F> {
 
         let (archive, _) = self.fetch_and_verify(app, &release, &choice.asset, &sums, progress)?;
         let exe = std::env::current_exe().map_err(|_| Error::NoCurrentExe)?;
-        craftcenter_install::self_update(&craftcenter_install::SelfUpdateRequest {
+        let replaced = craftcenter_install::self_update(&craftcenter_install::SelfUpdateRequest {
             current_exe: &exe,
             format: choice.format,
             asset: &choice.asset,
             archive: &archive,
             staging: &self.paths.self_update_staging(),
         })?;
+        // The new build's own program, recorded so that Verify can be asked of the installer
+        // too — whichever file the swap actually put in place: the executable inside the `.app`
+        // on macOS, the exe on Windows, the binary on Linux.
+        //
+        // Best-effort on purpose: the swap has already happened, and failing here would report a
+        // successful update as a failure over a record that only costs a later check.
+        let _ = craftcenter_install::record_self(&self.paths, &app.slug, &replaced.program);
         Ok(SelfUpdate { from: current, to: release.version, restart_required: true })
     }
 }
@@ -665,7 +683,41 @@ mod tests {
         assert!(!seen.is_empty(), "progress was reported");
 
         assert_eq!(center.row_for("photocraft").expect("row").status, Status::UpToDate);
-        assert!(center.verify("photocraft").is_ok(), "what is on disk matches what was recorded");
+        let report = center.verify("photocraft").expect("verified");
+        assert_eq!(report.level(), Level::Ok, "{}", report.summary());
+    }
+
+    /// The question Verify is for, asked through the facade both front ends call: an installed
+    /// file that has changed since it was installed is named, and the verdict is not a pass.
+    #[test]
+    fn an_installed_file_that_has_changed_since_is_reported_as_modified() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let center = center(root.path());
+        center.check("photocraft", true).expect("checked");
+        let installed = center.install("photocraft", &mut |_, _| {}).expect("installed");
+
+        let on_disk = std::path::PathBuf::from(&installed.dir).join("ai.storyteller.photocraft.AppImage");
+        let was = std::fs::read(&on_disk).expect("read");
+        std::fs::write(&on_disk, b"something else entirely").expect("tamper");
+
+        let report = center.verify("photocraft").expect("verified");
+        assert_eq!(report.level(), Level::Modified, "{}", report.summary());
+        assert_eq!(report.modified, ["ai.storyteller.photocraft.AppImage"]);
+
+        std::fs::write(&on_disk, &was).expect("put it back");
+        assert_eq!(center.verify("photocraft").expect("verified").level(), Level::Ok);
+    }
+
+    /// Asked of CraftCenter itself in a build that did not come from CraftCenter's own update —
+    /// a test binary, or a packaged one — there is nothing recorded to check against, and that
+    /// is an honest answer rather than an error or a pass.
+    #[test]
+    fn craftcenter_itself_has_nothing_recorded_until_it_has_updated_itself() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let center = center(root.path());
+        let report = center.verify("craftcenter").expect("asked");
+        assert_eq!(report.level(), Level::NotVerifiable);
+        assert!(report.summary().contains("own update"), "{}", report.summary());
     }
 
     #[test]

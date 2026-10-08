@@ -11,7 +11,7 @@
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
-use craftcenter_core::{Center, Error, Row, Status};
+use craftcenter_core::{Center, Error, Level, Row, Status, Verification};
 
 const USAGE: &str = "\
 craftcenter-cli — install and update the Crafting Apps
@@ -26,7 +26,7 @@ COMMANDS
     update [app]         update one app, or every app that has an update
     launch <app>         start an installed app
     remove <app>         uninstall an app
-    verify <app>         re-hash what is installed and compare it with what was recorded
+    verify <app>         check every installed file against what was recorded at install time
     config               show the current settings
     config install-dir <path>     choose where new installs go
     config install-dir --default  go back to the per-user default
@@ -46,6 +46,14 @@ NOTES
     Installs are per-user and never ask for administrator rights.
     Every download is checked against the release's SHA256SUMS.txt before it is installed.
     The only hosts contacted are github.com and api.github.com. There is no telemetry.
+
+    verify checks every file of an installed app against a digest recorded when it was
+    installed, so it answers whether what is on disk is still what CraftCenter put there,
+    not who published it. Files nothing recorded are reported and do not fail. An app
+    installed before CraftCenter recorded those digests reads as not verifiable until it is
+    reinstalled, and `verify craftcenter` asks the same of CraftCenter's own build.
+    It exits 0 when everything matches, 1 when a file has changed or gone, and 2 when there
+    is nothing to check against.
 ";
 
 fn main() -> ExitCode {
@@ -159,16 +167,9 @@ fn run() -> Result<ExitCode, String> {
         }
         "verify" => {
             let slug = need_app(args.app)?;
-            match center.verify(&slug) {
-                Ok(()) => {
-                    println!("{slug}: matches the digest recorded at install time");
-                    Ok(ExitCode::SUCCESS)
-                }
-                Err(error) => {
-                    eprintln!("{slug}: {error}");
-                    Ok(ExitCode::FAILURE)
-                }
-            }
+            let report = center.verify(&slug).map_err(|e| e.to_string())?;
+            print_verification(&slug, &report);
+            Ok(exit_code_for(&report))
         }
         "config" => cmd_config(&mut center, args.app.as_deref(), args.value.as_deref(), args.default),
         "move" => cmd_move(&center, args.app.as_deref()),
@@ -182,6 +183,29 @@ fn run() -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         other => Err(format!("unknown command {other:?}; `craftcenter-cli help` lists them")),
+    }
+}
+
+/// The verdict, and then every path it rests on.
+///
+/// The lists are the useful part: "something has changed" is only worth printing if it says
+/// what, and an unexpected file is worth mentioning even though it is not a failure.
+fn print_verification(slug: &str, report: &Verification) {
+    println!("{slug}: {}", report.summary());
+    for (tag, paths) in [("changed", &report.modified), ("missing", &report.missing), ("extra", &report.extra)] {
+        for path in paths {
+            println!("  {tag:<8} {path}");
+        }
+    }
+}
+
+/// Three answers, not two. A script asking whether an app is intact must not read "I cannot
+/// tell" as a yes, so "not verifiable" gets a code of its own.
+fn exit_code_for(report: &Verification) -> ExitCode {
+    match report.level() {
+        Level::Ok => ExitCode::SUCCESS,
+        Level::Modified | Level::Incomplete => ExitCode::FAILURE,
+        Level::NotVerifiable => ExitCode::from(2),
     }
 }
 
@@ -470,6 +494,22 @@ mod tests {
     #[test]
     fn megabytes_are_reported_in_mebibytes() {
         assert!((mib(1_048_576) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn verify_exits_differently_for_sound_changed_and_unanswerable() {
+        let sound = Verification { listed: 3, ..Verification::default() };
+        let changed = Verification { listed: 3, modified: vec!["bin/app".to_owned()], ..Verification::default() };
+        let gone = Verification { listed: 3, missing: vec!["bin/app".to_owned()], ..Verification::default() };
+        let unknown = Verification::not_verifiable("nothing was recorded");
+        // An extra file is reported in the summary and does not change the verdict.
+        let extra = Verification { listed: 3, extra: vec!["app.log".to_owned()], ..Verification::default() };
+
+        assert_eq!(format!("{:?}", exit_code_for(&sound)), format!("{:?}", ExitCode::SUCCESS));
+        assert_eq!(format!("{:?}", exit_code_for(&extra)), format!("{:?}", ExitCode::SUCCESS));
+        assert_eq!(format!("{:?}", exit_code_for(&changed)), format!("{:?}", ExitCode::FAILURE));
+        assert_eq!(format!("{:?}", exit_code_for(&gone)), format!("{:?}", ExitCode::FAILURE));
+        assert_eq!(format!("{:?}", exit_code_for(&unknown)), format!("{:?}", ExitCode::from(2)));
     }
 
     #[test]
