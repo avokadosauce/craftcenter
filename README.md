@@ -83,6 +83,7 @@ it could not be verified.
 
 CraftCenter has not cut its own release yet. Until it does, build it (see [Building](#building))
 and run `target/release/craftcenter`.
+See [CHANGELOG.md](CHANGELOG.md) for what's new in each release.
 
 Where things go, once it has:
 
