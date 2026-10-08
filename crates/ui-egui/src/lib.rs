@@ -47,7 +47,6 @@ enum Event {
     Checked { slug: String },
     Installed { slug: String, version: String },
     Removed { slug: String },
-    Verified { slug: String },
     Moved { slug: String },
     Failed { slug: String, message: String },
     SelfUpdated { to: String },
@@ -201,18 +200,6 @@ impl CraftCenterApp {
         });
     }
 
-    fn verify(&mut self, ctx: &egui::Context, slug: &str) {
-        let key = slug.to_owned();
-        let slug = slug.to_owned();
-        self.spawn(ctx, &key, move |center, sender, _ctx| {
-            let event = match center.verify(&slug) {
-                Ok(()) => Event::Verified { slug: slug.clone() },
-                Err(error) => Event::Failed { slug: slug.clone(), message: error.to_string() },
-            };
-            let _ = sender.send(event);
-        });
-    }
-
     fn launch(&mut self, slug: &str) {
         match self.center.launch(slug) {
             Ok(()) => self.message = Some((format!("Started {slug}"), Tone::Good)),
@@ -259,10 +246,6 @@ impl CraftCenterApp {
                     self.activity.remove(&slug);
                     self.message = Some((format!("Removed {slug}"), Tone::Neutral));
                     changed = true;
-                }
-                Event::Verified { slug } => {
-                    self.activity.remove(&slug);
-                    self.message = Some((format!("{slug} matches the digest recorded at install time"), Tone::Good));
                 }
                 Event::Moved { slug } => {
                     self.activity.remove(&slug);
@@ -527,10 +510,10 @@ impl CraftCenterApp {
                 }
                 ui.close();
             }
-            if ui.add_enabled(installed, egui::Button::new("Verify")).clicked() {
-                self.verify(ctx, &slug);
-                ui.close();
-            }
+            // Verify is hidden here, not removed: `Center::verify` only re-hashes the AppImage or
+            // launcher file, so on a DMG-installed .app or an unpacked Windows build it checks one
+            // file out of many and calls that "verified". It returns once an install-time manifest
+            // covers every file a format writes. The CLI's `verify` is unaffected.
             if ui.button("Release notes").clicked() {
                 if let Err(error) = self.center.open_release_notes(&slug) {
                     self.message = Some((error.to_string(), Tone::Danger));
