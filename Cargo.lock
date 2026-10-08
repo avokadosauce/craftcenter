@@ -792,6 +792,7 @@ version = "0.2.1"
 dependencies = [
  "craftcenter-core",
  "craftcenter-select",
+ "craftcenter-verify",
  "tempfile",
 ]
 
@@ -855,15 +856,19 @@ version = "0.2.1"
 dependencies = [
  "craftcenter-core",
  "craftcenter-select",
+ "craftcenter-verify",
  "egui",
  "image",
  "log",
+ "tempfile",
 ]
 
 [[package]]
 name = "craftcenter-verify"
 version = "0.2.1"
 dependencies = [
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
