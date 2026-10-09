@@ -85,11 +85,23 @@ it could not be verified.
 
 ## Install
 
-CraftCenter has not cut its own release yet. Until it does, build it (see [Building](#building))
-and run `target/release/craftcenter`.
+Download the latest release for your platform from the
+[Releases page](https://github.com/avokadosauce/craftcenter/releases):
+
+| Platform | Asset |
+|---|---|
+| **Linux** | `craftcenter-<version>-linux-<arch>.AppImage` (self-updating; `arch` is `x86_64` or `aarch64`) or `craftcenter-<version>-linux-<arch>.tar.gz` |
+| **macOS** | `craftcenter-<version>-macos-universal.dmg` |
+| **Windows** | `craftcenter-<version>-windows-x64-portable.zip` |
+
+Every release also publishes `SHA256SUMS.txt`; check a download against it before running it. The
+Linux AppImage carries a `.zsync` file alongside it, so it can update itself in place instead of
+redownloading the whole thing.
+
+To build it yourself instead, see [Building](#building) and run `target/release/craftcenter`.
 See [CHANGELOG.md](CHANGELOG.md) for what's new in each release.
 
-Where things go, once it has:
+Where things go:
 
 | | Apps | Launchers | State |
 |---|---|---|---|
