@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/craftcenter", "apps/craftcenter-cli", "xtask"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 rust-version = "1.90"
