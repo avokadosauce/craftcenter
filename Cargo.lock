@@ -765,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-core",
  "craftcenter-ui-egui",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-catalogue"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-core",
  "craftcenter-select",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-catalogue",
  "craftcenter-install",
@@ -813,7 +813,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-install"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-catalogue",
  "craftcenter-select",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-releases"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-catalogue",
  "craftcenter-verify",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-select"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-catalogue",
  "serde",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-ui-egui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-core",
  "craftcenter-select",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "craftcenter-verify"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4426,7 +4426,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craftcenter-catalogue",
  "craftcenter-releases",
