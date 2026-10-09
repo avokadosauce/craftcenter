@@ -114,6 +114,11 @@ fn run() -> Result<ExitCode, String> {
         }
         "version" => {
             println!("craftcenter-cli {}", env!("CARGO_PKG_VERSION"));
+            // Printing the version is this build proving it runs, which is the point at which
+            // the build it replaced can go.
+            if let Ok(exe) = std::env::current_exe() {
+                craftcenter_core::clean_after_self_update(&exe);
+            }
             return Ok(ExitCode::SUCCESS);
         }
         _ => {}
@@ -321,6 +326,7 @@ fn cmd_self_update(center: &Center) -> Result<ExitCode, String> {
         }
         Ok(update) => {
             println!("craftcenter {} -> {}; restart it to run the new build", update.from, update.to);
+            println!("the previous build is kept until the next start");
             Ok(ExitCode::SUCCESS)
         }
         Err(Error::NoRelease { .. }) => {

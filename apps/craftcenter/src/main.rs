@@ -17,11 +17,21 @@ use craftcenter_ui_egui::{CraftCenterApp, titlebar};
 /// to draw into once per frame.
 struct Shell {
     app: CraftCenterApp,
+    /// Whether the first frame has been drawn. The build this replaced is the only thing there is
+    /// to go back to if this one cannot run, so it is kept until this one has shown it can draw —
+    /// not before.
+    drawn: bool,
 }
 
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
+        if !self.drawn {
+            self.drawn = true;
+            if let Ok(exe) = std::env::current_exe() {
+                craftcenter_core::clean_after_self_update(&exe);
+            }
+        }
     }
 }
 
@@ -65,12 +75,6 @@ fn main() -> ExitCode {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
-    // A previous run may have replaced this program with a newer build and left the old image
-    // behind, where the platform would not let it be deleted while it was still mapped.
-    if let Ok(exe) = std::env::current_exe() {
-        craftcenter_core::clean_after_self_update(&exe);
-    }
-
     let center = match Center::open() {
         Ok(center) => center,
         Err(error) => {
@@ -93,7 +97,7 @@ fn main() -> ExitCode {
     match eframe::run_native(
         "CraftCenter",
         options,
-        Box::new(|cc| Ok(Box::new(Shell { app: CraftCenterApp::new(&cc.egui_ctx, center).with_folder_picker(Box::new(folder_picker)) }))),
+        Box::new(|cc| Ok(Box::new(Shell { app: CraftCenterApp::new(&cc.egui_ctx, center).with_folder_picker(Box::new(folder_picker)), drawn: false }))),
     ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

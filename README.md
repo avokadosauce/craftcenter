@@ -192,8 +192,13 @@ app and an unknown command.
   digest, re-point the launcher and the desktop entry, then delete the old copy — is covered by
   a test on Linux, and the order it happens in means an interrupted move leaves the app working
   where it already was;
-- replacing CraftCenter with a newer build of itself, on any platform. The file swap itself is
-  covered by tests; doing it to a genuinely running program is not.
+- replacing CraftCenter with a newer build of itself, on any platform. The per-format swaps and
+  the check that refuses to rename anything but a program over the running one are covered by
+  tests against hand-built fixtures; no test mounts a real disk image, and none of it has been
+  done to a genuinely running program. The next thing to confirm by hand is **a self-update on a
+  Mac, from 0.2.1 to whatever comes after it**: that the `.app` bundle is swapped, that
+  CraftCenter opens afterwards, and that the retired `.CraftCenter.app.old` beside it is gone
+  after that first start.
 
 ## Building
 

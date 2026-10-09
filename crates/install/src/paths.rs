@@ -102,6 +102,12 @@ impl Paths {
         self.cache.join("releases")
     }
 
+    /// Scratch space for unpacking a new build of CraftCenter itself. Emptied before and after
+    /// each self-update, so nothing is left of an attempt that failed part-way.
+    pub fn self_update_staging(&self) -> PathBuf {
+        self.cache.join("self-update")
+    }
+
     /// Create the directories an install needs. Done up front so a failure happens before
     /// anything is downloaded.
     pub fn create(&self) -> Result<(), Error> {
