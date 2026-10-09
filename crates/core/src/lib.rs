@@ -18,7 +18,7 @@ use craftcenter_verify::{Sums, hex};
 
 pub use craftcenter_catalogue::Kind;
 pub use craftcenter_install::Error as InstallError;
-pub use craftcenter_install::{clean_after_self_update, self_replace};
+pub use craftcenter_install::clean_after_self_update;
 pub use craftcenter_releases::Error as ReleaseError;
 pub use craftcenter_select::{Arch, Format, Note, Os};
 pub use settings::Settings;
@@ -446,8 +446,11 @@ impl<F: Fetch> Center<F> {
 
     /// Replace CraftCenter with a newer build of itself.
     ///
-    /// The same download-and-verify path as any other app, then an atomic swap of the running
-    /// executable. The caller restarts: this returns once the new build is in place.
+    /// The same download-and-verify path as any other app, and then the same per-format unpack:
+    /// the macOS asset is a disk image and the Windows one a zip, so what is swapped is the
+    /// `.app` bundle or the extracted executable, never the downloaded asset itself. The build
+    /// that is replaced is kept until [`clean_after_self_update`], which the front end calls
+    /// once the new one has started. The caller restarts: this returns once it is in place.
     pub fn self_update(&self, progress: Progress<'_>) -> Result<SelfUpdate, Error> {
         let app = self.catalogue.zelf().ok_or_else(|| Error::UnknownApp { slug: "craftcenter".to_owned() })?;
         let current = env!("CARGO_PKG_VERSION").to_owned();
@@ -461,7 +464,13 @@ impl<F: Fetch> Center<F> {
 
         let (archive, _) = self.fetch_and_verify(app, &release, &choice.asset, &sums, progress)?;
         let exe = std::env::current_exe().map_err(|_| Error::NoCurrentExe)?;
-        craftcenter_install::self_replace(&exe, &archive)?;
+        craftcenter_install::self_update(&craftcenter_install::SelfUpdateRequest {
+            current_exe: &exe,
+            format: choice.format,
+            asset: &choice.asset,
+            archive: &archive,
+            staging: &self.paths.self_update_staging(),
+        })?;
         Ok(SelfUpdate { from: current, to: release.version, restart_required: true })
     }
 }

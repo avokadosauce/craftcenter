@@ -17,6 +17,7 @@
 
 pub mod fs;
 mod paths;
+mod program;
 mod state;
 
 use std::io;
@@ -27,6 +28,7 @@ use craftcenter_catalogue::App;
 use craftcenter_select::{Choice, Format};
 
 pub use paths::Paths;
+pub use program::check_is_program;
 pub use state::{Installed, State};
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +59,8 @@ pub enum Error {
     CopyMismatch { path: String },
     #[error("{path} already exists; nothing was moved")]
     DestinationExists { path: String },
+    #[error("{path}: {found}, not a program this machine can run; nothing was replaced")]
+    NotAProgram { path: String, found: &'static str },
 }
 
 /// Bytes done, and the total when one is known. The same shape the download reporter uses, so a
@@ -197,35 +201,38 @@ fn install_tarball(paths: &Paths, request: &Request<'_>, home: &Path) -> Result<
 /// LaunchServices by a browser.
 fn install_dmg(paths: &Paths, request: &Request<'_>, previous: Option<&Installed>) -> Result<Installed, Error> {
     let mount = paths.cache.join("mnt").join(&request.app.slug);
-    let _ = std::fs::remove_dir_all(&mount);
-    fs::mkdir_p(&mount)?;
-
-    run("hdiutil", &["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", &mount.display().to_string(), &request.archive.display().to_string()])?;
-
-    let result = (|| {
-        let bundle =
-            first_bundle(&mount)?.ok_or_else(|| Error::NotInArchive { asset: request.choice.asset.clone(), what: "application bundle (.app)".to_owned() })?;
+    with_mounted_bundle(request.archive, &mount, &request.choice.asset, |bundle| {
         let name = bundle.file_name().ok_or_else(|| Error::NotInArchive { asset: request.choice.asset.clone(), what: "named bundle".to_owned() })?;
         // A bundle that is already installed is replaced where it stands, wherever that is.
         let destination = previous.and_then(|installed| installed.root.clone()).map(PathBuf::from).unwrap_or_else(|| paths.apps.join(name));
         let home = destination.parent().unwrap_or(&paths.apps).to_path_buf();
         fs::mkdir_p(&home)?;
-        let staged = home.join(format!(".{}.new", name.to_string_lossy()));
-        let _ = std::fs::remove_dir_all(&staged);
-        copy_tree(&bundle, &staged)?;
-
-        let retired = destination.with_file_name(format!(".{}.old", name.to_string_lossy()));
-        let _ = std::fs::remove_dir_all(&retired);
-        if destination.exists() {
-            std::fs::rename(&destination, &retired).map_err(fs::io_err(&destination))?;
-        }
-        std::fs::rename(&staged, &destination).map_err(fs::io_err(&destination))?;
+        let staged = stage_bundle(bundle, &destination)?;
+        let retired = swap_tree(&destination, &staged)?;
+        // An app's own previous version is kept as a version directory and recorded in the state
+        // file, so there is nothing to gain from holding this hidden copy back as well.
         let _ = std::fs::remove_dir_all(&retired);
         Ok(record(request, &destination, &destination, &destination))
+    })
+}
+
+/// Mount `archive` read-only, hand the `.app` inside it to `with`, and detach whatever happens.
+///
+/// `-nobrowse -noautoopen` keeps the Finder out of it and the mount point is CraftCenter's own,
+/// so nothing is left on the desktop for the user to eject. Both an app install and a
+/// self-update need the mounted bundle, and neither should own the mounting.
+fn with_mounted_bundle<T>(archive: &Path, mount: &Path, asset: &str, with: impl FnOnce(&Path) -> Result<T, Error>) -> Result<T, Error> {
+    let _ = std::fs::remove_dir_all(mount);
+    fs::mkdir_p(mount)?;
+    run("hdiutil", &["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", &mount.display().to_string(), &archive.display().to_string()])?;
+
+    let result = (|| {
+        let bundle = first_bundle(mount)?.ok_or_else(|| Error::NotInArchive { asset: asset.to_owned(), what: "application bundle (.app)".to_owned() })?;
+        with(&bundle)
     })();
 
     let _ = run("hdiutil", &["detach", &mount.display().to_string()]);
-    let _ = std::fs::remove_dir_all(&mount);
+    let _ = std::fs::remove_dir_all(mount);
     result
 }
 
@@ -673,42 +680,296 @@ pub fn prune_previous(paths: &Paths, app: &App) -> Result<(), Error> {
     state.save(&paths.state)
 }
 
-/// Replace the running program with a newer build of itself.
-///
-/// The swap is two renames: the running file is moved aside and the new one takes its place. That
-/// order is what makes it work on all three platforms — Unix lets a running image be renamed or
-/// unlinked because the kernel holds the inode, and Windows refuses to *delete* a running image
-/// but allows it to be *renamed*. The moved-aside file is deleted immediately where that is
-/// permitted, and by [`clean_after_self_update`] on the next start where it is not.
-///
-/// The caller restarts the program; this function does not, because only the caller knows whether
-/// it is safe to.
-pub fn self_replace(current_exe: &Path, staged: &Path) -> Result<(), Error> {
-    fs::make_executable(staged)?;
-    let retired = retired_path(current_exe);
-    let _ = std::fs::remove_file(&retired);
-    std::fs::rename(current_exe, &retired).map_err(fs::io_err(current_exe))?;
+/// A new build of CraftCenter, downloaded and verified, ready to take the running one's place.
+pub struct SelfUpdateRequest<'a> {
+    /// The running program, as `std::env::current_exe()` reports it.
+    pub current_exe: &'a Path,
+    /// Which kind of asset was downloaded. The swap is per-format, exactly as an install is.
+    pub format: Format,
+    /// The asset's name, for the error when it turns out to hold no program.
+    pub asset: &'a str,
+    /// The downloaded asset, already checked against the release's `SHA256SUMS.txt`.
+    pub archive: &'a Path,
+    /// Scratch space this call may empty and fill: where the archive is unpacked.
+    pub staging: &'a Path,
+}
 
-    if let Err(error) = std::fs::rename(staged, current_exe) {
-        // Put the running program back rather than leaving the user with nothing to run.
-        let _ = std::fs::rename(&retired, current_exe);
-        return Err(Error::Io { path: current_exe.display().to_string(), source: error });
+/// What a self-update left on disk.
+#[derive(Debug)]
+pub struct Replaced {
+    /// What now holds the new build: the program file, or the `.app` bundle around it.
+    pub target: PathBuf,
+    /// The build that was replaced, kept until the new one has started once.
+    pub previous: PathBuf,
+}
+
+/// Replace the running CraftCenter with a newer build of itself.
+///
+/// **The asset is not the program.** A release's macOS asset is a disk image and its Windows
+/// asset is a zip; only the Linux AppImage is itself the thing that runs. Until 0.2.1 this
+/// renamed the downloaded asset straight over `current_exe`, which left a disk image where the
+/// Mach-O had been — the program never started again, and because the retired copy was deleted
+/// at once there was nothing to go back to. So each format is now unpacked the way the matching
+/// install unpacks it, whatever comes out is checked to be a program this machine can run
+/// ([`check_is_program`]), and the build it replaces is kept until [`clean_after_self_update`].
+pub fn self_update(request: &SelfUpdateRequest<'_>) -> Result<Replaced, Error> {
+    let _ = std::fs::remove_dir_all(request.staging);
+    fs::mkdir_p(request.staging)?;
+
+    let result = match request.format {
+        // Here the download really is the program: an AppImage is an ELF with a filesystem
+        // appended. It still goes through the same check as everything else.
+        Format::AppImage => replace_program(request, request.archive),
+        Format::TarGz => {
+            fs::unpack_tar_gz(request.archive, request.staging)?;
+            let root = unpacked_root(request.staging)?;
+            let program = program_in(&root, request.current_exe).ok_or_else(|| no_program_in(request))?;
+            replace_program(request, &program)
+        }
+        Format::PortableZip => {
+            fs::unpack_zip(request.archive, request.staging)?;
+            let root = unpacked_root(request.staging)?;
+            let program = program_in(&root, request.current_exe).ok_or_else(|| no_program_in(request))?;
+            let replaced = replace_program(request, &program)?;
+            // The portable build is a folder rather than a lone executable: the command line
+            // binary and the notices ship beside the program and belong beside the new one too.
+            copy_companions(&root, &program, &replaced.target);
+            Ok(replaced)
+        }
+        Format::Dmg => {
+            let mount = request.staging.join("mnt");
+            with_mounted_bundle(request.archive, &mount, request.asset, |bundle| replace_from_bundle(request, bundle))
+        }
+        Format::Msi => Err(Error::NeedsElevation { app: "CraftCenter".to_owned(), format: "per-machine installer" }),
+        Format::CliZip => Err(Error::NotInArchive { asset: request.asset.to_owned(), what: "application (this is the headless CLI)".to_owned() }),
+    };
+
+    let _ = std::fs::remove_dir_all(request.staging);
+    result
+}
+
+fn no_program_in(request: &SelfUpdateRequest<'_>) -> Error {
+    Error::NotInArchive { asset: request.asset.to_owned(), what: "CraftCenter program".to_owned() }
+}
+
+/// Copy `program` beside the running one and rename it into place.
+fn replace_program(request: &SelfUpdateRequest<'_>, program: &Path) -> Result<Replaced, Error> {
+    let staged = stage_sibling(request.current_exe, program)?;
+    match self_replace(request.current_exe, &staged) {
+        Ok(previous) => Ok(Replaced { target: request.current_exe.to_path_buf(), previous }),
+        Err(error) => {
+            let _ = std::fs::remove_file(&staged);
+            Err(error)
+        }
     }
-    // Succeeds on Unix; on Windows it fails while the old image is still mapped, and the next
-    // start clears it.
+}
+
+/// The half of a DMG self-update that needs no disk image: a `.app` tree has been found, and now
+/// it takes the place of the one the program is running from.
+///
+/// A program started from a bundle is replaced *as a bundle* — that is what the Finder, the dock
+/// and the code signature all treat as the program, and macOS allows a running bundle to be
+/// renamed out from under itself. A program built from source is in no bundle at all, so the
+/// Mach-O is taken out of the one in the disk image and the file itself is replaced.
+fn replace_from_bundle(request: &SelfUpdateRequest<'_>, bundle: &Path) -> Result<Replaced, Error> {
+    let Some(destination) = enclosing_bundle(request.current_exe) else {
+        let program = bundle_program(bundle, request.current_exe).ok_or_else(|| no_program_in(request))?;
+        return replace_program(request, &program);
+    };
+
+    let staged = stage_bundle(bundle, &destination)?;
+    // Check the bundle's own program before the bundle is renamed into place: a `.app` holding
+    // the wrong thing would be just as unopenable as the disk image 0.2.0 left behind.
+    let checked = bundle_program(&staged, request.current_exe).ok_or_else(|| no_program_in(request)).and_then(|program| check_is_program(&program));
+    if let Err(error) = checked {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error);
+    }
+
+    let previous = swap_tree(&destination, &staged)?;
+    Ok(Replaced { target: destination, previous })
+}
+
+/// The `.app` the running program sits inside, if it sits inside one. A build from source does
+/// not: `cargo build` produces a bare Mach-O with no bundle around it.
+fn enclosing_bundle(program: &Path) -> Option<PathBuf> {
+    program.ancestors().find(|ancestor| ancestor.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf)
+}
+
+/// The executable inside a bundle.
+fn bundle_program(bundle: &Path, running: &Path) -> Option<PathBuf> {
+    let macos = bundle.join("Contents/MacOS");
+    for name in names_to_try(running) {
+        let candidate = macos.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    // A later release could rename the binary; one executable in `Contents/MacOS` is unambiguous.
+    let mut files = std::fs::read_dir(&macos).ok()?.flatten().map(|entry| entry.path()).filter(|path| path.is_file());
+    let only = files.next()?;
+    files.next().is_none().then_some(only)
+}
+
+/// The program inside an unpacked archive, looked for at its root and in `bin/`.
+fn program_in(root: &Path, running: &Path) -> Option<PathBuf> {
+    for dir in [root.to_path_buf(), root.join("bin")] {
+        for name in names_to_try(running) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// What the new build's program might be called: whatever the running one is called first, so a
+/// portable copy someone renamed still updates itself, then the names a release publishes.
+fn names_to_try(running: &Path) -> Vec<String> {
+    let mut names = vec![file_name_of(running)];
+    for name in ["craftcenter.exe", "craftcenter"] {
+        if !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+/// When an archive unpacked to exactly one directory, that directory is the real root.
+fn unpacked_root(dir: &Path) -> Result<PathBuf, Error> {
+    Ok(single_child_dir(dir)?.unwrap_or_else(|| dir.to_path_buf()))
+}
+
+/// Copy `program` to a hidden file beside `target`, so the rename that swaps them happens within
+/// one directory and is therefore atomic. A downloaded asset lives in the cache, which on some
+/// machines is a different filesystem, where a rename would fail outright.
+fn stage_sibling(target: &Path, program: &Path) -> Result<PathBuf, Error> {
+    let staged = staged_path(target);
+    if let Some(parent) = staged.parent() {
+        fs::mkdir_p(parent)?;
+    }
+    let _ = std::fs::remove_file(&staged);
+    std::fs::copy(program, &staged).map_err(fs::io_err(&staged))?;
+    Ok(staged)
+}
+
+/// The same, for the `.app` tree a macOS build lives in.
+fn stage_bundle(bundle: &Path, destination: &Path) -> Result<PathBuf, Error> {
+    let staged = staged_path(destination);
+    let _ = std::fs::remove_dir_all(&staged);
+    copy_tree(bundle, &staged)?;
+    Ok(staged)
+}
+
+fn staged_path(target: &Path) -> PathBuf {
+    target.with_file_name(format!(".{}.new", file_name_of(target)))
+}
+
+fn retired_path(target: &Path) -> PathBuf {
+    target.with_file_name(format!(".{}.old", file_name_of(target)))
+}
+
+fn file_name_of(path: &Path) -> String {
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "craftcenter".to_owned())
+}
+
+/// Replace the running program file with `staged`, which is already beside it.
+///
+/// The swap is two renames: the running file is moved aside and the new one takes its place.
+/// That order is what makes it work on all three platforms — Unix lets a running image be
+/// renamed or unlinked because the kernel holds the inode, and Windows refuses to *delete* a
+/// running image but allows it to be *renamed*. Returns where the previous build was moved to;
+/// it stays there until [`clean_after_self_update`].
+///
+/// The caller restarts the program; this function does not, because only the caller knows
+/// whether it is safe to.
+pub fn self_replace(current_exe: &Path, staged: &Path) -> Result<PathBuf, Error> {
+    check_is_program(staged)?;
+    fs::make_executable(staged)?;
+    swap_file(current_exe, staged)
+}
+
+/// Rename `staged` over `target`, keeping whatever was there as `.<name>.old`. A second rename
+/// that fails puts the original back, so the worst case is the build that was already running.
+fn swap_file(target: &Path, staged: &Path) -> Result<PathBuf, Error> {
+    let retired = retired_path(target);
     let _ = std::fs::remove_file(&retired);
-    Ok(())
+    let existed = target.exists();
+    if existed {
+        std::fs::rename(target, &retired).map_err(fs::io_err(target))?;
+    }
+    if let Err(error) = std::fs::rename(staged, target) {
+        if existed {
+            let _ = std::fs::rename(&retired, target);
+        }
+        return Err(Error::Io { path: target.display().to_string(), source: error });
+    }
+    Ok(retired)
 }
 
-fn retired_path(current_exe: &Path) -> PathBuf {
-    let name = current_exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "craftcenter".to_owned());
-    current_exe.with_file_name(format!(".{name}.old"))
+/// The same swap for a directory, which is what a macOS bundle is.
+fn swap_tree(destination: &Path, staged: &Path) -> Result<PathBuf, Error> {
+    let retired = retired_path(destination);
+    let _ = std::fs::remove_dir_all(&retired);
+    let existed = destination.exists();
+    if existed {
+        std::fs::rename(destination, &retired).map_err(fs::io_err(destination))?;
+    }
+    if let Err(error) = std::fs::rename(staged, destination) {
+        if existed {
+            let _ = std::fs::rename(&retired, destination);
+        }
+        let _ = std::fs::remove_dir_all(staged);
+        return Err(Error::Io { path: destination.display().to_string(), source: error });
+    }
+    Ok(retired)
 }
 
-/// Delete the previous build left behind by [`self_replace`]. Call it once at startup; it does
-/// nothing when there is nothing to clean.
+/// Everything else the archive held goes beside the new program: the command line binary, the
+/// licence, the portable build's own notice.
+///
+/// Best-effort on purpose. The update is the program; a companion that cannot be replaced
+/// because it is itself running leaves the copy already there, which still works, and the next
+/// update takes another go at it.
+fn copy_companions(root: &Path, program: &Path, target: &Path) {
+    let Some(destination) = target.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let from = entry.path();
+        if from == program {
+            continue;
+        }
+        let Some(name) = from.file_name() else { continue };
+        let to = destination.join(name);
+        if from.is_dir() {
+            let _ = copy_tree(&from, &to);
+            continue;
+        }
+        // Renamed into place rather than written over, because Windows refuses to write over an
+        // image that is mapped but will let it be moved aside.
+        let Ok(staged) = stage_sibling(&to, &from) else { continue };
+        match swap_file(&to, &staged) {
+            Ok(retired) => {
+                let _ = std::fs::remove_file(&retired);
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&staged);
+            }
+        }
+    }
+}
+
+/// Delete the build a self-update replaced.
+///
+/// Call it once the new build has proved it runs — the window has drawn a frame, or the command
+/// line has printed its version — and not before: until then the previous build is the only
+/// thing there is to go back to. It does nothing when there is nothing to clean.
 pub fn clean_after_self_update(current_exe: &Path) {
     let _ = std::fs::remove_file(retired_path(current_exe));
+    if let Some(bundle) = enclosing_bundle(current_exe) {
+        let _ = std::fs::remove_dir_all(retired_path(&bundle));
+    }
 }
 
 #[cfg(test)]
@@ -872,30 +1133,270 @@ mod tests {
         assert!(matches!(remove(&paths, &app("photocraft")), Err(Error::NotInstalled { .. })));
     }
 
-    #[test]
-    fn self_replace_swaps_the_running_file_and_cleans_up() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let exe = dir.path().join("craftcenter");
-        let staged = dir.path().join("craftcenter.new");
-        std::fs::write(&exe, "old build").expect("write");
-        std::fs::write(&staged, "new build").expect("write");
+    /// Bytes that pass the program check on whichever platform the tests are running on, with
+    /// `mark` at the end so a swap can be told from no swap.
+    fn program_bytes(mark: &str) -> Vec<u8> {
+        let mut bytes = vec![0u8; 64];
+        if cfg!(target_os = "macos") {
+            bytes[0..4].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe]);
+        } else if cfg!(target_os = "windows") {
+            bytes[0..2].copy_from_slice(b"MZ");
+            bytes[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());
+            bytes.extend_from_slice(b"PE\0\0");
+        } else {
+            bytes[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        }
+        bytes.extend_from_slice(mark.as_bytes());
+        bytes
+    }
 
-        self_replace(&exe, &staged).expect("replaced");
-        assert_eq!(std::fs::read_to_string(&exe).expect("read"), "new build");
-        assert!(!staged.exists());
-        clean_after_self_update(&exe);
-        assert!(!retired_path(&exe).exists());
+    fn write_program(path: &Path, mark: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create");
+        }
+        std::fs::write(path, program_bytes(mark)).expect("write");
+    }
+
+    /// Which build a file holds, read back from the mark `program_bytes` appended.
+    fn mark_of(path: &Path) -> String {
+        let bytes = std::fs::read(path).expect("read");
+        let header = program_bytes("").len();
+        String::from_utf8_lossy(bytes.get(header..).unwrap_or_default()).into_owned()
+    }
+
+    /// A file ending in the 512-byte `koly` trailer `hdiutil` writes: a disk image, as far as
+    /// anything reading its bytes is concerned.
+    fn disk_image(path: &Path) -> PathBuf {
+        let mut bytes = vec![0u8; 1024];
+        bytes[512..516].copy_from_slice(b"koly");
+        std::fs::write(path, bytes).expect("write");
+        path.to_path_buf()
+    }
+
+    /// A `.app` tree, which is what a mounted disk image holds and what CI has no `hdiutil` to
+    /// make. Everything after the mount is the same code either way.
+    fn bundle_tree(parent: &Path, name: &str, mark: &str) -> PathBuf {
+        let bundle = parent.join(name);
+        write_program(&bundle.join("Contents/MacOS/craftcenter"), mark);
+        std::fs::create_dir_all(bundle.join("Contents/Resources")).expect("create");
+        std::fs::write(bundle.join("Contents/Info.plist"), "<plist/>").expect("write");
+        bundle
+    }
+
+    fn portable_zip(dir: &Path, entries: &[(&str, Vec<u8>)]) -> PathBuf {
+        let path = dir.join("craftcenter-0.2.1-windows-x64-portable.zip");
+        let file = std::fs::File::create(&path).expect("create");
+        let mut writer = zip::ZipWriter::new(file);
+        for (name, bytes) in entries {
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            writer.start_file(*name, options).expect("entry");
+            std::io::Write::write_all(&mut writer, bytes).expect("write");
+        }
+        writer.finish().expect("finish");
+        path
+    }
+
+    fn tarball(dir: &Path, mark: &str) -> PathBuf {
+        let path = dir.join("craftcenter-0.2.1-linux-x86_64.tar.gz");
+        let file = std::fs::File::create(&path).expect("create");
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        let bytes = program_bytes(mark);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append_data(&mut header, "craftcenter-0.2.1-linux-x86_64/bin/craftcenter", bytes.as_slice()).expect("append");
+        builder.into_inner().expect("finish").finish().expect("flush");
+        path
+    }
+
+    fn self_request<'a>(current_exe: &'a Path, format: Format, asset: &'a str, archive: &'a Path, staging: &'a Path) -> SelfUpdateRequest<'a> {
+        SelfUpdateRequest { current_exe, format, asset, archive, staging }
     }
 
     #[test]
-    fn a_failed_self_replace_puts_the_old_program_back() {
+    fn self_replace_swaps_the_running_file_and_keeps_the_build_it_replaced() {
         let dir = tempfile::tempdir().expect("temp dir");
         let exe = dir.path().join("craftcenter");
-        std::fs::write(&exe, "old build").expect("write");
-        // Nothing was staged, so the second rename fails.
-        let result = self_replace(&exe, &dir.path().join("absent"));
-        assert!(result.is_err());
-        assert_eq!(std::fs::read_to_string(&exe).expect("still runnable"), "old build");
+        write_program(&exe, "old build");
+        let staged = staged_path(&exe);
+        write_program(&staged, "new build");
+
+        let previous = self_replace(&exe, &staged).expect("replaced");
+        assert_eq!(mark_of(&exe), "new build");
+        assert!(!staged.exists());
+        // The point of 0.2.1: the retired build is still there to go back to.
+        assert_eq!(mark_of(&previous), "old build");
+
+        clean_after_self_update(&exe);
+        assert!(!previous.exists(), "the previous build goes once the new one has run");
+    }
+
+    #[test]
+    fn nothing_but_a_program_is_renamed_over_the_running_build() {
+        // The 0.2.0 bug, as a test: the downloaded asset is not the program, and presenting it as
+        // one must fail before anything is moved.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("craftcenter");
+        write_program(&exe, "old build");
+
+        let dmg = disk_image(&dir.path().join("craftcenter-0.2.0-macos-universal.dmg"));
+        let zip = portable_zip(dir.path(), &[("craftcenter-0.2.1-windows-x64-portable/craftcenter.exe", program_bytes("new build"))]);
+        for (archive, expected) in [(&dmg, "a disk image"), (&zip, "a zip archive")] {
+            let error = self_replace(&exe, archive).expect_err("refused");
+            assert!(matches!(error, Error::NotAProgram { .. }), "{error:?}");
+            assert!(error.to_string().contains(expected), "{error}");
+            assert_eq!(mark_of(&exe), "old build", "the running program was replaced anyway");
+            assert!(!retired_path(&exe).exists(), "the running program was moved aside anyway");
+        }
+    }
+
+    #[test]
+    fn a_rename_that_fails_puts_the_running_program_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("craftcenter");
+        write_program(&exe, "old build");
+
+        // Nothing is staged, so the second rename fails after the first has already moved the
+        // running program out of the way.
+        let error = swap_file(&exe, &staged_path(&exe)).expect_err("failed");
+        assert!(matches!(error, Error::Io { .. }), "{error:?}");
+        assert_eq!(mark_of(&exe), "old build");
+        assert!(!retired_path(&exe).exists(), "the moved-aside copy was left behind");
+    }
+
+    #[test]
+    fn an_appimage_self_update_is_the_download_itself() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("bin/craftcenter");
+        write_program(&exe, "old build");
+        let archive = dir.path().join("downloads/craftcenter-0.2.1-linux-x86_64.AppImage");
+        write_program(&archive, "new build");
+        let staging = dir.path().join("staging");
+
+        let replaced = self_update(&self_request(&exe, Format::AppImage, "craftcenter-0.2.1-linux-x86_64.AppImage", &archive, &staging)).expect("updated");
+
+        assert_eq!(replaced.target, exe);
+        assert_eq!(mark_of(&exe), "new build");
+        assert_eq!(mark_of(&replaced.previous), "old build");
+        // Staged as a copy, so the verified download is still in the cache for a retry.
+        assert_eq!(mark_of(&archive), "new build");
+    }
+
+    #[test]
+    fn a_tarball_self_update_swaps_the_binary_out_of_the_tree() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("bin/craftcenter");
+        write_program(&exe, "old build");
+        let archive = tarball(dir.path(), "new build");
+        let staging = dir.path().join("staging");
+
+        let replaced = self_update(&self_request(&exe, Format::TarGz, "craftcenter-0.2.1-linux-x86_64.tar.gz", &archive, &staging)).expect("updated");
+
+        assert_eq!(mark_of(&exe), "new build");
+        assert_eq!(mark_of(&replaced.previous), "old build");
+        assert!(!staging.exists(), "the unpacked tree is cleaned up");
+    }
+
+    #[test]
+    fn a_portable_zip_self_update_swaps_the_exe_and_what_ships_beside_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("CraftCenter");
+        let exe = folder.join("craftcenter.exe");
+        write_program(&exe, "old build");
+        write_program(&folder.join("craftcenter-cli.exe"), "old cli");
+        let archive = portable_zip(
+            dir.path(),
+            &[
+                ("craftcenter-0.2.1-windows-x64-portable/craftcenter.exe", program_bytes("new build")),
+                ("craftcenter-0.2.1-windows-x64-portable/craftcenter-cli.exe", program_bytes("new cli")),
+                ("craftcenter-0.2.1-windows-x64-portable/portable.txt", b"CraftCenter - portable build\n".to_vec()),
+            ],
+        );
+        let staging = dir.path().join("staging");
+
+        let replaced =
+            self_update(&self_request(&exe, Format::PortableZip, "craftcenter-0.2.1-windows-x64-portable.zip", &archive, &staging)).expect("updated");
+
+        assert_eq!(mark_of(&exe), "new build");
+        assert_eq!(mark_of(&replaced.previous), "old build");
+        assert_eq!(mark_of(&folder.join("craftcenter-cli.exe")), "new cli", "the command line binary came along");
+        assert_eq!(std::fs::read_to_string(folder.join("portable.txt")).expect("read"), "CraftCenter - portable build\n");
+        assert!(!staged_path(&exe).exists(), "a staging copy was left behind");
+        assert!(!staging.exists(), "the unpacked folder is cleaned up");
+    }
+
+    #[test]
+    fn a_disk_image_self_update_swaps_the_bundle_and_keeps_the_old_one() {
+        // No `hdiutil` here, so the `.app` a mounted image would hold is built by hand; the swap
+        // this exercises is the half that runs after the mount, on every platform.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let applications = dir.path().join("Applications");
+        let installed = bundle_tree(&applications, "CraftCenter.app", "old build");
+        let exe = installed.join("Contents/MacOS/craftcenter");
+        let fresh = bundle_tree(&dir.path().join("mnt"), "CraftCenter.app", "new build");
+        let staging = dir.path().join("staging");
+        let archive = disk_image(&dir.path().join("craftcenter-0.2.1-macos-universal.dmg"));
+
+        let request = self_request(&exe, Format::Dmg, "craftcenter-0.2.1-macos-universal.dmg", &archive, &staging);
+        let replaced = replace_from_bundle(&request, &fresh).expect("updated");
+
+        assert_eq!(replaced.target, installed, "the bundle the program runs from is what was swapped");
+        assert_eq!(mark_of(&exe), "new build");
+        assert_eq!(replaced.previous, applications.join(".CraftCenter.app.old"));
+        assert_eq!(mark_of(&replaced.previous.join("Contents/MacOS/craftcenter")), "old build");
+        assert!(!staged_path(&installed).exists(), "the staged bundle was renamed, not copied");
+
+        clean_after_self_update(&exe);
+        assert!(!replaced.previous.exists(), "the previous bundle goes once the new build has run");
+    }
+
+    #[test]
+    fn a_build_from_source_has_no_bundle_so_the_program_itself_is_replaced() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("target/release/craftcenter");
+        write_program(&exe, "old build");
+        let fresh = bundle_tree(&dir.path().join("mnt"), "CraftCenter.app", "new build");
+        let staging = dir.path().join("staging");
+        let archive = disk_image(&dir.path().join("craftcenter-0.2.1-macos-universal.dmg"));
+
+        let request = self_request(&exe, Format::Dmg, "craftcenter-0.2.1-macos-universal.dmg", &archive, &staging);
+        let replaced = replace_from_bundle(&request, &fresh).expect("updated");
+
+        assert_eq!(replaced.target, exe);
+        assert_eq!(mark_of(&exe), "new build", "the Mach-O came out of the bundle in the image");
+        assert_eq!(mark_of(&replaced.previous), "old build");
+    }
+
+    #[test]
+    fn an_archive_holding_no_program_is_refused_and_changes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("CraftCenter/craftcenter.exe");
+        write_program(&exe, "old build");
+        let archive = portable_zip(dir.path(), &[("portable.txt", b"CraftCenter - portable build\n".to_vec())]);
+        let staging = dir.path().join("staging");
+
+        let error =
+            self_update(&self_request(&exe, Format::PortableZip, "craftcenter-0.2.1-windows-x64-portable.zip", &archive, &staging)).expect_err("refused");
+
+        assert!(matches!(error, Error::NotInArchive { .. }), "{error:?}");
+        assert_eq!(mark_of(&exe), "old build");
+    }
+
+    #[test]
+    fn craftcenter_never_updates_itself_through_the_per_machine_installer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("craftcenter.exe");
+        write_program(&exe, "old build");
+        let archive = dir.path().join("craftcenter-0.2.1-windows-x64.msi");
+        std::fs::write(&archive, b"not used").expect("write");
+        let staging = dir.path().join("staging");
+
+        let error = self_update(&self_request(&exe, Format::Msi, "craftcenter-0.2.1-windows-x64.msi", &archive, &staging)).expect_err("refused");
+
+        assert!(matches!(error, Error::NeedsElevation { .. }), "{error:?}");
+        assert_eq!(mark_of(&exe), "old build");
     }
 
     #[test]
