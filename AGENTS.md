@@ -31,7 +31,7 @@ sponsored or endorsed by the ArtCraft team.
 ```text
 crates/
   catalogue   L0  catalogue/apps.toml: parsing and validation
-  verify      L0  SHA256SUMS.txt parsing, streaming SHA-256
+  verify      L0  SHA256SUMS.txt parsing, streaming SHA-256, the per-file manifest of a tree
   select      L1  which release asset to install, per platform
   releases    L2  release discovery over github.com, the REST fallback, the on-disk cache
   install     L3  install / launch / remove per platform, the state file, the atomic swap
@@ -74,9 +74,19 @@ Nothing is installed that has not been hashed and matched against the release's 
 the manifest does not list is refused. A mismatched download is deleted, not kept. There is no
 setting to turn this off, and adding one would need a very good reason.
 
+An install also records a manifest of its own — the SHA-256 and size of every file it wrote,
+relative to the install directory — and `verify` checks the tree against that. It has to: the
+release's digest is the digest of an *archive* for three of the four formats, so re-hashing an
+installed file against it can only ever match for an AppImage. Anything that writes files into an
+install writes the manifest with them, and a format added later must do the same. A self-update
+records the program it put in place by the same rule — the file the swap landed on, not the archive
+it came out of and not the `.app` directory around it.
+
 Be honest about what it proves: the manifest is unsigned in every upstream repository, so a
-verified digest shows the bytes are what that release published — not who published it. Where the
-platform offers a real identity check (a notarised DMG, an Authenticode signature), use it as well.
+verified digest shows the bytes are what that release published — not who published it. The
+per-file manifest is CraftCenter's own, in the user's own directory, so it shows that a file has
+not changed since it was installed and nothing more — not who installed it. Where the platform
+offers a real identity check (a notarised DMG, an Authenticode signature), use it as well.
 
 ### Nothing is written over something that might be running
 

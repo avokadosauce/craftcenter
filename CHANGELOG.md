@@ -4,6 +4,27 @@ All notable changes to CraftCenter are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Every install records the SHA-256 and size of every file it writes, and **Verify** checks what
+  is on disk against that record — for all four formats, not just an AppImage. It names what has
+  changed or gone, reports files nothing installed without failing them, and says plainly when
+  there is nothing to check against. A card shows the verdict; a list of paths opens a sheet.
+- Moving an installed app checks the copy against that record as well, so a move cannot carry a
+  tampered install to a new folder and bless it.
+- `craftcenter-cli verify` exits 0 when everything matches, 1 when a file has changed or gone, and
+  2 when there is nothing to check against. `verify craftcenter` asks the same of CraftCenter's own
+  build, against what its last self-update recorded.
+
+### Changed
+
+- "Verify" is back on a card's menu, and now covers every file an install writes. Before this it
+  compared one installed file with the digest of the *downloaded asset*, which is the same thing
+  only for an AppImage: it could never match for an unpacked tarball or Windows zip, and errored
+  on a macOS bundle.
+
 ## [0.2.1]
 
 ### Fixed

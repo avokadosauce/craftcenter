@@ -49,6 +49,10 @@ of them checks whether a newer version exists. CraftCenter is the piece that was
 - **Checksum verification, always.** Every download is hashed and compared with the release's own
   `SHA256SUMS.txt` before anything is installed. An asset the manifest does not list is refused; a
   download that does not match is deleted.
+- **Verify, file by file.** An install records the SHA-256 and size of every file it writes, so
+  **Verify** on a card — or `craftcenter-cli verify <app>` — says whether what is on disk is still
+  what was put there, and names anything that has changed or gone. See
+  [What Verify proves](#what-verify-proves).
 - **Per-user installs, wherever you want them.** Nothing is written outside your own directories
   and you are never asked for an administrator password. Settings names the folder apps go in;
   see [Choosing where apps go](#choosing-where-apps-go).
@@ -122,6 +126,59 @@ file back and checks its digest against the original, re-points the launcher, th
 or the Start Menu shortcut, and only then deletes the old copy. An app that appears to be running
 is refused rather than moved out from under itself — close it and move it again.
 
+## What Verify proves
+
+Every install records a manifest of its own: the SHA-256 and size of every regular file it wrote,
+and every symlink by its target, with paths relative to the install directory. **Verify** — on a
+card's `…` menu, or `craftcenter-cli verify <app>` — walks that directory again and compares.
+
+| Format | What the install writes | What Verify checks |
+|---|---|---|
+| **AppImage** (Linux) | one executable, a byte copy of the asset | that file, whose digest is also the one the release published for it |
+| **tar.gz** (Linux) | an unpacked tree under the version directory | every file and symlink in it |
+| **portable zip** (Windows) | an unpacked tree under the version directory | every file in it |
+| **DMG** (macOS) | `<App>.app`, copied into your Applications folder | every file of the bundle, and every symlink by its target rather than by what it points at |
+
+Before this existed, the only digest recorded was the *downloaded asset's*. That is the same thing
+as the installed bytes for an AppImage and for nothing else, so the old check could not pass for an
+unpacked tree and errored outright on a macOS bundle. The asset's digest is still recorded, because
+it is the part that says where the bytes came from; the manifest is the part that says whether they
+are still there.
+
+There are four answers, and the third and fourth matter as much as the first two:
+
+- **Everything matches** — every recorded file is present, same size, same digest.
+- **Something changed** — a recorded file is there and is not what was installed. The paths are
+  named, in a sheet when there are several.
+- **Something is missing** — a recorded file is gone. A broken install rather than a replaced one.
+- **Not verifiable** — there is nothing to check against: the app was installed before CraftCenter
+  recorded manifests, or the record has since been removed or replaced. Reinstalling writes a new
+  one. On the command line this is exit code 2, separately from 0 for a match and 1 for a change,
+  so a script cannot read "I cannot tell" as a yes.
+
+**Files CraftCenter did not install are reported, not failed.** An app's own log or settings file
+living inside its folder is not tampering. Six names are not even reported, because they come and
+go on their own: `.DS_Store`, `Thumbs.db`, `desktop.ini`, anything beginning `._`, anything ending
+`.tmp-new`, and CraftCenter's own `.craftcenter-write-test` probe.
+
+**And what it does not prove.** The manifest is plain JSON beside the install record, in your own
+directory: anything that can rewrite an installed binary can rewrite the manifest next to it. The
+record names the manifest by digest, so removing or swapping one without the other is caught and
+reported as *not verifiable* — but this is a check for a file that changed after it was installed,
+not a signature. Executable bits and empty directories are not recorded. Where the platform offers
+a real identity check — a notarised DMG, an Authenticode signature — that is a separate thing and
+the installer uses it where it can.
+
+**Moving an app re-checks it against the manifest too**, using the digests the copy computes as it
+goes, so a move cannot quietly carry a tampered tree to a new folder and write a fresh record of it
+as though all were well. A move of an app whose tree does not match what was installed is refused,
+and nothing is moved.
+
+`craftcenter-cli verify craftcenter` asks the same of CraftCenter itself, against what its own last
+self-update recorded: the executable inside the `.app` on macOS, the `.exe` on Windows, the binary
+on Linux — whichever file the swap actually put in place. A build that arrived any other way —
+built from source, or from a package — has recorded nothing and says so.
+
 ## The command line
 
 ```console
@@ -135,8 +192,15 @@ installed gridcraft 0.3.0 from gridcraft-0.3.0-linux-x86_64.AppImage
 run it with: /home/someone/.local/bin/gridcraft
 
 $ craftcenter-cli verify gridcraft
-gridcraft: matches the digest recorded at install time
+gridcraft: 3 files match what was installed
+
+$ craftcenter-cli verify photocraft
+photocraft: 1 file of 412 changed since it was installed
+  changed  Contents/MacOS/PhotoCraft
 ```
+
+`verify` with no app named checks every installed app and carries the worst answer out as its exit
+code.
 
 `list`, `check`, `install`, `update`, `launch`, `remove`, `verify`, `self-update`, `paths`.
 `--json` for `list`, `--force` to ignore the cached check, `--platform windows-arm64` to ask what
@@ -192,13 +256,21 @@ app and an unknown command.
   digest, re-point the launcher and the desktop entry, then delete the old copy — is covered by
   a test on Linux, and the order it happens in means an interrupted move leaves the app working
   where it already was;
-- replacing CraftCenter with a newer build of itself, on any platform. The per-format swaps and
-  the check that refuses to rename anything but a program over the running one are covered by
-  tests against hand-built fixtures; no test mounts a real disk image, and none of it has been
-  done to a genuinely running program. The next thing to confirm by hand is **a self-update on a
-  Mac, from 0.2.1 to whatever comes after it**: that the `.app` bundle is swapped, that
-  CraftCenter opens afterwards, and that the retired `.CraftCenter.app.old` beside it is gone
-  after that first start.
+- replacing CraftCenter with a newer build of itself, on any platform. The per-format swaps, the
+  check that refuses to rename anything but a program over the running one, and the record it
+  writes of its own program afterwards are covered by tests against hand-built fixtures; no test
+  mounts a real disk image, and none of it has been done to a genuinely running program. The next
+  thing to confirm by hand is **a self-update on a Mac, from 0.2.1 to whatever comes after it**:
+  that the `.app` bundle is swapped, that CraftCenter opens afterwards, and that the retired
+  `.CraftCenter.app.old` beside it is gone after that first start;
+- **Verify against a real install of a tarball, a portable zip or a DMG.** The manifest is written
+  and checked by tests for all four formats, including a hand-built macOS bundle with a symlink in
+  it, but no person has yet run Verify on a Windows install or on a bundle a real DMG was mounted
+  to produce;
+- the sheet that lists changed files, and the line a verdict leaves along the foot of a card. One
+  headless frame test now opens a real `egui` frame against the recorded fixtures and checks that
+  the grid, a selection, an install and both of those draw without a coordinate that is not a
+  number — which is not the same as a person seeing them.
 
 ## Building
 

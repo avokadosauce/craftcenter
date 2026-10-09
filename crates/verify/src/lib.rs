@@ -13,6 +13,8 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable, clippy::indexing_slicing)]
 
+pub mod manifest;
+
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -37,6 +39,10 @@ pub enum Error {
     Mismatch { name: String, expected: String, actual: String },
     #[error("reading {path}: {source}")]
     Io { path: String, source: io::Error },
+    #[error("the record of installed files could not be read: {message}")]
+    Manifest { message: String },
+    #[error("this install's file record was written by a newer CraftCenter (format {found}); update CraftCenter to read it")]
+    ManifestVersion { found: u32 },
 }
 
 /// Lowercase hex of a digest.

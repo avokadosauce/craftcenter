@@ -20,4 +20,7 @@ craftcenter-core = { workspace = true }
 craftcenter-select = { workspace = true }
 
 [dev-dependencies]
+# The verify test writes the two files an install leaves behind, so it needs the same manifest
+# code the installer uses rather than a second, hand-rolled spelling of it.
+craftcenter-verify = { workspace = true }
 tempfile = { workspace = true }
