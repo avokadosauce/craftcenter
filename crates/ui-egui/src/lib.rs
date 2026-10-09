@@ -260,7 +260,8 @@ impl CraftCenterApp {
                 Event::SelfUpdated { to } => {
                     self.activity.remove("craftcenter");
                     self.restart_needed = true;
-                    self.message = Some((format!("CraftCenter {to} is installed. Restart to run it."), Tone::Accent));
+                    self.message =
+                        Some((format!("CraftCenter {to} is installed. Restart to run it; the previous build is kept until the next start."), Tone::Accent));
                 }
             }
         }
@@ -736,6 +737,10 @@ impl CraftCenterApp {
                     widgets::pill(ui, "restart to run the new build", Tone::Accent);
                 }
             });
+            if self.restart_needed {
+                ui.add_space(8.0);
+                widgets::dim(ui, "The previous build is kept until the next start, in case the new one does not run.");
+            }
         });
     }
 
