@@ -1,5 +1,10 @@
 # Roadmap
 
+The storytold team now ships their own **[ArtCraft Launcher](https://github.com/storytold/craft-launcher)**,
+covering the same ground this project does, from the people who make the apps — thank you for
+building it. The items below are honest about what was planned, but CraftCenter will probably not
+see much further feature work now that an official launcher exists; see `README.md`.
+
 Honest status first: this is a first release of a program whose window has not yet been opened by a
 person. See `README.md` for exactly which steps have been run and which have not.
 

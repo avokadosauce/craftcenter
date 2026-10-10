@@ -32,6 +32,18 @@
 > team. It contains none of their code: it downloads the releases they publish, verifies them, and
 > installs them. The ArtCraft name, wordmark and mark are their trademarks and are not used here.
 
+## There's now an official launcher
+
+The storytold team has shipped their own
+**[ArtCraft Launcher](https://github.com/storytold/craft-launcher)** — thank you for building it!
+It covers the same ground as this project, comes straight from the people who make the apps, and
+is under active development. If you are choosing between the two, we'd point you there.
+
+CraftCenter will probably not see much further feature work from here — this project filled a gap
+until the apps' own publisher shipped something, and now they have. The install and usage notes
+below stay accurate for anyone who prefers to keep using it, and a small, security-relevant fix may
+still follow if one is needed (see [SECURITY.md](SECURITY.md)).
+
 ---
 
 ## What it does

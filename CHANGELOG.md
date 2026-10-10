@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-11
+
+### Added
+
+- CraftCenter now says, once per version, that the storytold team ships an official launcher —
+  [ArtCraft Launcher](https://github.com/storytold/craft-launcher) — and recommends it: a one-time
+  dialog on the desktop app's first launch of a version, with a link and a skip, and the same
+  notice printed once on the command line's first run of a version (never with `--json`, and never
+  on a non-interactive run). Skipping is remembered, so neither front end repeats itself.
+
+### Changed
+
+- **This is likely the last release with new features.** The gap CraftCenter filled — nobody's
+  update checker for the Crafting Apps — is now filled by the apps' own publisher. README.md and
+  ROADMAP.md say the same, and thank the storytold team for building it. A fix for a serious
+  security problem may still follow; see SECURITY.md.
+
 ## [0.3.0] - 2026-10-09
 
 ### Added

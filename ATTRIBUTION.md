@@ -1,5 +1,9 @@
 # Attribution
 
+The storytold team, whose apps' icons this project catalogues below, now ships their own
+**[ArtCraft Launcher](https://github.com/storytold/craft-launcher)** — thank you for building it.
+See `README.md` for what that means for this project going forward.
+
 Every non-code asset in this repository, with its author, source and license. CraftCenter's own
 code and original assets are under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). When you
 add an asset, add a row here in the same change; third-party assets must be permissively licensed

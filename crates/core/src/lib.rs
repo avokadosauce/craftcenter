@@ -33,6 +33,10 @@ pub use craftcenter_select::{Arch, Format, Note, Os};
 pub use craftcenter_verify::manifest::{Level, Verification};
 pub use settings::Settings;
 
+/// Where the official launcher lives. Both front ends link to this, and only this: nothing here
+/// copies its text, which stays the storytold team's own to write.
+pub const OFFICIAL_LAUNCHER_URL: &str = "https://github.com/storytold/craft-launcher";
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("the catalogue could not be read: {0}")]
@@ -436,6 +440,27 @@ impl<F: Fetch> Center<F> {
         craftcenter_install::open_externally(&self.release_notes_url(slug)?).map_err(Error::from)
     }
 
+    /// Whether the once-per-version notice about the official launcher still needs to be shown.
+    ///
+    /// Compares the running build's own version against what was last recorded, so the notice
+    /// comes back exactly once for a build that updates to a new version, and never again for
+    /// one that does not.
+    pub fn launcher_notice_pending(&self) -> bool {
+        self.settings.launcher_notice_shown_for.as_deref() != Some(env!("CARGO_PKG_VERSION"))
+    }
+
+    /// Record that the official-launcher notice has been shown for this build's version, so
+    /// [`Self::launcher_notice_pending`] answers false until the next version ships.
+    pub fn dismiss_launcher_notice(&mut self) -> Result<(), Error> {
+        let settings = Settings { launcher_notice_shown_for: Some(env!("CARGO_PKG_VERSION").to_owned()), ..self.settings.clone() };
+        self.set_settings(settings)
+    }
+
+    /// Open the official launcher's page in the user's browser.
+    pub fn open_official_launcher_page(&self) -> Result<(), Error> {
+        craftcenter_install::open_externally(OFFICIAL_LAUNCHER_URL).map_err(Error::from)
+    }
+
     /// Check what is on disk against the record of what was installed.
     ///
     /// Four answers, not two: everything matches, something has changed, something is gone, or
@@ -796,9 +821,50 @@ mod tests {
     fn settings_persist_and_never_hold_a_token() {
         let root = tempfile::tempdir().expect("temp dir");
         let mut center = center(root.path());
-        center.set_settings(Settings { check_interval_hours: 1, keep_previous: false, theme: "pro".to_owned(), install_dir: None }).expect("saved");
+        center
+            .set_settings(Settings {
+                check_interval_hours: 1,
+                keep_previous: false,
+                theme: "pro".to_owned(),
+                install_dir: None,
+                launcher_notice_shown_for: None,
+            })
+            .expect("saved");
         assert_eq!(center.settings().check_interval_hours, 1);
         let reopened = Center::with(Catalogue::embedded().expect("parses"), Paths::rooted(root.path()), Recorded::default());
         assert_eq!(reopened.settings().check_interval_hours, 1);
+    }
+
+    /// The official-launcher notice is pending until it is dismissed, and dismissing it records
+    /// *this build's* version, not some other one — so a build that is still 0.3.0 does not read
+    /// a 0.4.0 dismissal (recorded by some later build) as its own.
+    #[test]
+    fn the_launcher_notice_is_pending_until_dismissed_for_this_version() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let mut center = center(root.path());
+        assert!(center.launcher_notice_pending(), "never shown, so still pending");
+
+        center.dismiss_launcher_notice().expect("dismissed");
+        assert!(!center.launcher_notice_pending(), "dismissed for the running build's own version");
+        assert_eq!(center.settings().launcher_notice_shown_for.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+
+        // A dismissal recorded against a different version does not count as having shown it
+        // for this one.
+        center.set_settings(Settings { launcher_notice_shown_for: Some("0.0.0-not-this-build".to_owned()), ..center.settings().clone() }).expect("saved");
+        assert!(center.launcher_notice_pending(), "a different version's dismissal is not this one's");
+    }
+
+    /// The dismissal is written to disk, not just held in memory, so it survives the next launch
+    /// — the same guarantee [`settings_persist_and_never_hold_a_token`] checks for settings in
+    /// general.
+    #[test]
+    fn the_launcher_notice_dismissal_survives_a_restart() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let mut center = center(root.path());
+        center.dismiss_launcher_notice().expect("dismissed");
+
+        let reopened = Center::with(Catalogue::embedded().expect("parses"), Paths::rooted(root.path()), Recorded::default());
+        assert!(!reopened.launcher_notice_pending());
+        assert_eq!(reopened.settings().launcher_notice_shown_for.as_deref(), Some(env!("CARGO_PKG_VERSION")));
     }
 }

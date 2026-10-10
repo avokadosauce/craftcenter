@@ -134,6 +134,7 @@ fn run() -> Result<ExitCode, String> {
     }
 
     let mut center = Center::open().map_err(|e| e.to_string())?;
+    maybe_print_launcher_notice(&mut center, args.json);
     if let Some(label) = &args.platform {
         let platform = craftcenter_select::Platform::parse(label).ok_or_else(|| format!("{label:?} is not a platform CraftCenter installs for"))?;
         center = center.with_platform(platform);
@@ -180,6 +181,33 @@ fn run() -> Result<ExitCode, String> {
         }
         other => Err(format!("unknown command {other:?}; `craftcenter-cli help` lists them")),
     }
+}
+
+/// A once-per-version heads-up that the official launcher exists, so someone running an older
+/// build eventually hears about it even though nothing here checks for updates on its own.
+///
+/// Printed to stderr, and only when `is_terminal()` says someone is watching — a script parsing
+/// `--json` (or any other piped output) must see nothing it did not ask for.
+fn maybe_print_launcher_notice(center: &mut Center, json: bool) {
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    if !should_print_launcher_notice(json, center.launcher_notice_pending()) {
+        return;
+    }
+    eprintln!("CraftCenter note: the Crafting Apps now have an official launcher, ArtCraft Launcher,");
+    eprintln!("made by the storytold team, at {}.", craftcenter_core::OFFICIAL_LAUNCHER_URL);
+    eprintln!("CraftCenter is unofficial, not affiliated with that team, and will probably see");
+    eprintln!("little further development from here. You may want to switch.");
+    // Best-effort: failing to persist the dismissal must not fail the command the user ran.
+    let _ = center.dismiss_launcher_notice();
+}
+
+/// The gating decision that is actually worth a test: whether to print, given the `--json` flag
+/// and whether the notice is still pending. TTY-ness is not unit-testable here, so it is checked
+/// directly in [`maybe_print_launcher_notice`] instead, the same way `Reporter::new` does.
+fn should_print_launcher_notice(json: bool, pending: bool) -> bool {
+    !json && pending
 }
 
 /// `verify <app>`, or every installed app when none is named.
@@ -558,6 +586,14 @@ mod tests {
         assert_eq!(format!("{:?}", code_for(worst)), format!("{:?}", ExitCode::FAILURE));
         let quiet = severity(Level::Ok).max(severity(Level::NotVerifiable));
         assert_eq!(format!("{:?}", code_for(quiet)), format!("{:?}", ExitCode::from(2)));
+    }
+
+    #[test]
+    fn the_launcher_notice_prints_only_when_pending_and_not_json() {
+        assert!(should_print_launcher_notice(false, true));
+        assert!(!should_print_launcher_notice(true, true));
+        assert!(!should_print_launcher_notice(false, false));
+        assert!(!should_print_launcher_notice(true, false));
     }
 
     #[test]
