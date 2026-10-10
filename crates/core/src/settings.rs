@@ -26,11 +26,17 @@ pub struct Settings {
     /// moving it is a separate, explicit action.
     #[serde(default)]
     pub install_dir: Option<String>,
+    /// The CraftCenter version the official-launcher notice has already been shown and
+    /// dismissed for. `None` means it has never been shown. Compared against
+    /// `CARGO_PKG_VERSION` so the notice reappears exactly once per new version, the same way a
+    /// release note would.
+    #[serde(default)]
+    pub launcher_notice_shown_for: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { check_interval_hours: 24, keep_previous: true, theme: "proMedium".to_owned(), install_dir: None }
+        Self { check_interval_hours: 24, keep_previous: true, theme: "proMedium".to_owned(), install_dir: None, launcher_notice_shown_for: None }
     }
 }
 
@@ -67,7 +73,13 @@ mod tests {
     fn round_trips() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("settings.toml");
-        let settings = Settings { check_interval_hours: 6, keep_previous: false, theme: "studio".to_owned(), install_dir: None };
+        let settings = Settings {
+            check_interval_hours: 6,
+            keep_previous: false,
+            theme: "studio".to_owned(),
+            install_dir: None,
+            launcher_notice_shown_for: Some("0.3.0".to_owned()),
+        };
         settings.save(&path).expect("saved");
         assert_eq!(Settings::load(&path), settings);
     }
@@ -88,6 +100,18 @@ mod tests {
         // And resetting puts it back to the default.
         Settings { install_dir: None, ..chosen }.save(&path).expect("saved");
         assert_eq!(Settings::load(&path).install_dir, None);
+    }
+
+    #[test]
+    fn the_shown_for_version_round_trips_and_defaults_to_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("settings.toml");
+
+        assert_eq!(Settings::default().launcher_notice_shown_for, None);
+
+        let shown = Settings { launcher_notice_shown_for: Some("0.4.0".to_owned()), ..Settings::default() };
+        shown.save(&path).expect("saved");
+        assert_eq!(Settings::load(&path), shown);
     }
 
     #[test]

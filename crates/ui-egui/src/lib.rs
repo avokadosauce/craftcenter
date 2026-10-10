@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use craftcenter_core::{Center, Fetch, Level, Row, Settings, Status, Ureq, Verification};
+use craftcenter_core::{Center, Fetch, Level, OFFICIAL_LAUNCHER_URL, Row, Settings, Status, Ureq, Verification};
 use craftcenter_select::{Os, Platform, Preference, select};
 use egui::{RichText, TextureHandle};
 
@@ -115,6 +115,10 @@ pub struct CraftCenterApp<F: Fetch = Ureq> {
     /// True once a first check has been kicked off, so it happens exactly once per launch.
     checked_on_start: bool,
     restart_needed: bool,
+    /// Whether the once-per-version notice about the official launcher is still open. Seeded
+    /// from [`Center::launcher_notice_pending`] at launch, then held here so a frame mid-dismissal
+    /// does not have to re-ask the core what it already asked once.
+    launcher_notice: bool,
 }
 
 impl<F: Fetch + Send + Sync + 'static> CraftCenterApp<F> {
@@ -129,6 +133,7 @@ impl<F: Fetch + Send + Sync + 'static> CraftCenterApp<F> {
         let rows = center.rows();
         let platforms = rows.iter().map(|row| (row.app.slug.clone(), published_for(row))).collect();
         let misplaced = center.misplaced();
+        let launcher_notice = center.launcher_notice_pending();
         Self {
             center,
             rows,
@@ -148,6 +153,7 @@ impl<F: Fetch + Send + Sync + 'static> CraftCenterApp<F> {
             sender,
             checked_on_start: false,
             restart_needed: false,
+            launcher_notice,
         }
     }
 
@@ -620,6 +626,73 @@ impl<F: Fetch + Send + Sync + 'static> CraftCenterApp<F> {
         });
         if close || response.should_close() {
             self.sheet = None;
+        }
+    }
+
+    /// The once-per-version notice that an official launcher for the Crafting Apps now exists.
+    ///
+    /// Same `egui::Modal` shape as [`Self::verify_sheet`]: a local `close` flag set inside the
+    /// closure, folded together with the modal's own close button afterwards, so there is exactly
+    /// one way out of this dialog and every one of them dismisses it for this build's version.
+    fn launcher_notice_modal(&mut self, ctx: &egui::Context) {
+        if !self.launcher_notice {
+            return;
+        }
+        let mut close = false;
+        let mut open_link = false;
+        let response = egui::Modal::new(egui::Id::new("launcher-notice")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            widgets::section_title(ui, "There's now an official launcher");
+            ui.add_space(6.0);
+            widgets::dim(
+                ui,
+                "The storytold team has put out an official launcher for the Crafting Apps. \
+                 CraftCenter is unofficial, and honestly isn't likely to see much more work done \
+                 on it, so we'd recommend moving over to the official one. You're welcome to keep \
+                 using CraftCenter instead, if you'd rather.",
+            );
+            ui.add_space(8.0);
+            widgets::numeric(ui, OFFICIAL_LAUNCHER_URL);
+            ui.add_space(10.0);
+            widgets::hairline(ui);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if widgets::primary_button(ui, "Open the official launcher page").clicked() {
+                    open_link = true;
+                    close = true;
+                }
+                if widgets::secondary_button(ui, "Skip and keep using CraftCenter").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if open_link && let Err(error) = self.center.open_official_launcher_page() {
+            // The browser failing to launch is not a reason to bring the notice back: the user
+            // already asked to move on, and the link itself is shown in the dialog in case they
+            // want to copy it by hand.
+            self.message = Some((error.to_string(), Tone::Danger));
+        }
+        if close || response.should_close() {
+            self.dismiss_launcher_notice();
+        }
+    }
+
+    /// Record the notice as shown for this build's version, and close it for the session either
+    /// way.
+    ///
+    /// The same `Arc::get_mut` guard [`Self::apply_settings`] uses: a worker thread holding a
+    /// clone of the core would make writing the record race whatever it is doing, so the write is
+    /// skipped rather than risked, and the user is told rather than left to wonder why the notice
+    /// comes back next launch.
+    fn dismiss_launcher_notice(&mut self) {
+        self.launcher_notice = false;
+        match Arc::get_mut(&mut self.center) {
+            Some(center) => {
+                if let Err(error) = center.dismiss_launcher_notice() {
+                    self.message = Some((error.to_string(), Tone::Danger));
+                }
+            }
+            None => self.message = Some(("The launcher notice will be recorded once the current download finishes".to_owned(), Tone::Warning)),
         }
     }
 
@@ -1142,6 +1215,7 @@ impl<F: Fetch + Send + Sync + 'static> CraftCenterApp<F> {
         self.top_bar(ui);
         self.status_bar(ui);
         self.verify_sheet(ctx);
+        self.launcher_notice_modal(ctx);
 
         let tokens = Tokens::get(ctx);
         egui::CentralPanel::default_margins().frame(egui::Frame::NONE.fill(tokens.dock).inner_margin(egui::Margin::same(12))).show(ui, |ui| match self.view {
@@ -1158,6 +1232,49 @@ mod tests {
 
     fn names(slugs: &[&str]) -> Vec<String> {
         slugs.iter().map(|slug| (*slug).to_owned()).collect()
+    }
+
+    /// A `Fetch` that answers nothing. The launcher-notice tests never check or install
+    /// anything — they only need a `Center` to exist — so there is nothing for this to serve.
+    struct NoFetch;
+
+    impl craftcenter_core::Fetch for NoFetch {
+        fn get(&self, _url: &str, _follow_redirects: bool) -> Result<craftcenter_core::Response, craftcenter_core::ReleaseError> {
+            Ok(craftcenter_core::Response { status: 404, location: None, body: Vec::new() })
+        }
+
+        fn get_to(
+            &self,
+            _url: &str,
+            _sink: &mut dyn std::io::Write,
+            _progress: &mut dyn FnMut(u64, Option<u64>),
+        ) -> Result<u16, craftcenter_core::ReleaseError> {
+            Ok(404)
+        }
+    }
+
+    /// A bare core over a fresh, empty settings file in `root`.
+    fn bare_center(root: &std::path::Path) -> Center<NoFetch> {
+        let catalogue = craftcenter_core::Catalogue::embedded().expect("catalogue parses");
+        Center::with(catalogue, craftcenter_core::Paths::rooted(root), NoFetch)
+    }
+
+    /// The notice opens on a fresh install, and dismissing it — either button, both routes
+    /// through the same private helper — closes it for the session and records it so the core
+    /// itself stops asking.
+    #[test]
+    fn the_launcher_notice_opens_once_and_closes_for_good_when_dismissed() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let center = bare_center(root.path());
+        assert!(center.launcher_notice_pending(), "fresh settings: never shown");
+
+        let ctx = egui::Context::default();
+        let mut app = CraftCenterApp::new(&ctx, center);
+        assert!(app.launcher_notice, "the app opens with the notice still pending");
+
+        app.dismiss_launcher_notice();
+        assert!(!app.launcher_notice, "dismissing closes it for this session");
+        assert!(!app.center.launcher_notice_pending(), "and records it, so it does not reopen next launch");
     }
 
     #[test]
